@@ -1,45 +1,11 @@
 <template>
   <div class="data-manage">
-    <el-container>
-      <el-header class="header">
-        <div class="header-content">
-          <div class="logo" @click="$router.push('/')">
-            <el-icon :size="28" color="#409EFF"><DataAnalysis /></el-icon>
-            <span class="title">DaydayUp</span>
-          </div>
-          <el-menu
-            :default-active="activeMenu"
-            mode="horizontal"
-            :router="true"
-            class="nav-menu"
-          >
-            <el-menu-item index="/">
-              <el-icon><HomeFilled /></el-icon>
-              <span>首页</span>
-            </el-menu-item>
-            <el-menu-item index="/sync">
-              <el-icon><Refresh /></el-icon>
-              <span>数据同步</span>
-            </el-menu-item>
-            <el-menu-item index="/metadata">
-              <el-icon><Grid /></el-icon>
-              <span>元数据</span>
-            </el-menu-item>
-            <el-menu-item index="/review">
-              <el-icon><TrendCharts /></el-icon>
-              <span>复盘分析</span>
-            </el-menu-item>
-          </el-menu>
-        </div>
-      </el-header>
-      
-      <el-main>
-        <div class="page-header">
-          <h2>数据管理</h2>
-        </div>
-        
-        <!-- 数据统计 -->
-        <el-row :gutter="20" class="stats-row">
+    <div class="page-header">
+      <h2>数据管理</h2>
+    </div>
+    
+    <!-- 数据统计 -->
+    <el-row :gutter="20" class="stats-row">
           <el-col :span="6">
             <el-card shadow="hover">
               <div class="stat-item">
@@ -134,8 +100,6 @@
             </el-button>
           </el-empty>
         </el-card>
-      </el-main>
-    </el-container>
   </div>
 </template>
 
@@ -151,13 +115,6 @@ const loading = ref(false)
 const taskCount = ref(0)
 const stockCount = ref(0)
 const syncCount = ref(0)
-
-const activeMenu = computed(() => {
-  const path = window.location.pathname
-  if (path.startsWith('/sync')) return '/sync'
-  if (path.startsWith('/review')) return '/review'
-  return '/datasource'
-})
 
 // 加载统计数据
 const loadStats = async () => {

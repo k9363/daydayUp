@@ -120,13 +120,19 @@ def start_sync_task(task_id):
         if task.status == 'running':
             return jsonify({'code': 400, 'message': '任务已在运行中'}), 400
 
+        # 允许从 stopped 状态继续，或者启动新的任务
+        if task.status not in ['pending', 'stopped', 'failed']:
+            return jsonify({'code': 400, 'message': f'任务状态为 {task.status}，无法启动'}), 400
+
         # 启动异步任务
         from threading import Thread
+        from flask import current_app
         service = get_data_sync_service()
+        app = current_app._get_current_object()
 
-        def run_task(app_ctx):
+        def run_task():
             try:
-                with app_ctx:
+                with app.app_context():
                     service.sync_kline_data(
                         db_session=db.session,
                         task_id=task.id,
@@ -138,9 +144,7 @@ def start_sync_task(task_id):
             except Exception as e:
                 logger.error(f"同步任务执行失败: {e}")
 
-        from flask import Flask
-        app = Flask(__name__)
-        thread = Thread(target=run_task, args=(app.app_context(),))
+        thread = Thread(target=run_task, daemon=True)
         thread.start()
 
         return jsonify({
@@ -151,6 +155,32 @@ def start_sync_task(task_id):
 
     except Exception as e:
         logger.exception("启动同步任务失败")
+        return jsonify({'code': 500, 'message': str(e)}), 500
+
+
+@sync_bp.route('/task/<int:task_id>/stop', methods=['POST'])
+def stop_sync_task(task_id):
+    """停止同步任务"""
+    try:
+        task = DataSyncTask.query.get(task_id)
+        if not task:
+            return jsonify({'code': 404, 'message': '任务不存在'}), 404
+
+        if task.status != 'running':
+            return jsonify({'code': 400, 'message': '任务不在运行中'}), 400
+
+        # 将任务状态设置为 stopped，用户可以继续从断点开始
+        task.status = 'stopped'
+        db.session.commit()
+
+        return jsonify({
+            'code': 200,
+            'message': '任务已停止，可继续从断点开始',
+            'data': task.to_dict()
+        })
+
+    except Exception as e:
+        logger.exception("停止同步任务失败")
         return jsonify({'code': 500, 'message': str(e)}), 500
 
 
@@ -236,6 +266,115 @@ def get_stock_type_options():
         'message': '操作成功',
         'data': options
     })
+
+
+@sync_bp.route('/kline/<stock_code>', methods=['GET'])
+def get_stock_kline(stock_code):
+    """
+    获取股票K线数据
+    
+    请求参数:
+        - stock_code: 股票代码 (如 sh.600000)
+        - frequency: K线频率 (d=日线, w=周线, m=月线)
+        - limit: 返回记录数，默认100
+    
+    返回:
+        K线数据列表，按交易日期倒序
+    """
+    try:
+        frequency = request.args.get('frequency', 'd')
+        limit = int(request.args.get('limit', 100))
+        
+        from models.kline import StockDailyKLine, StockWeeklyKLine, StockMonthlyKLine
+        
+        # 根据频率获取不同的表
+        if frequency == 'w':
+            model_class = StockWeeklyKLine
+            date_field = StockWeeklyKLine.trade_date
+            query = db.session.query(
+                model_class.trade_date,
+                model_class.open,
+                model_class.high,
+                model_class.low,
+                model_class.close,
+                model_class.volume,
+                model_class.amount,
+                model_class.pct_chg
+            ).filter(
+                model_class.stock_code == stock_code
+            ).order_by(date_field.desc()).limit(limit)
+        elif frequency == 'm':
+            model_class = StockMonthlyKLine
+            date_field = StockMonthlyKLine.trade_date
+            query = db.session.query(
+                model_class.trade_date,
+                model_class.open,
+                model_class.high,
+                model_class.low,
+                model_class.close,
+                model_class.volume,
+                model_class.amount,
+                model_class.pct_chg
+            ).filter(
+                model_class.stock_code == stock_code
+            ).order_by(date_field.desc()).limit(limit)
+        else:
+            # 日线 - 使用 stock_daily_kline 表 (与数据同步保存的表一致)
+            model_class = StockDailyKLine
+            date_field = StockDailyKLine.trade_date
+            query = db.session.query(
+                model_class.trade_date,
+                model_class.open_price,
+                model_class.high_price,
+                model_class.low_price,
+                model_class.close_price,
+                model_class.volume,
+                model_class.turnover,
+                model_class.change_percent
+            ).filter(
+                model_class.stock_code == stock_code
+            ).order_by(date_field.desc()).limit(limit)
+        
+        data = query.all()
+        
+        # 转换为字典列表
+        result = []
+        for item in data:
+            # 处理元组和对象两种情况
+            if isinstance(item, tuple):
+                result.append({
+                    'trade_date': item[0],
+                    'open': float(item[1]) if item[1] else None,
+                    'high': float(item[2]) if item[2] else None,
+                    'low': float(item[3]) if item[3] else None,
+                    'close': float(item[4]) if item[4] else None,
+                    'volume': float(item[5]) if item[5] else None,
+                    'amount': float(item[6]) if item[6] else None,
+                    'pct_chg': float(item[7]) if len(item) > 7 and item[7] else None
+                })
+            else:
+                result.append({
+                    'trade_date': item.trade_date,
+                    'open': float(item.open_price) if item.open_price else None,
+                    'high': float(item.high_price) if item.high_price else None,
+                    'low': float(item.low_price) if item.low_price else None,
+                    'close': float(item.close_price) if item.close_price else None,
+                    'volume': float(item.volume) if item.volume else None,
+                    'amount': float(item.turnover) if item.turnover else None,
+                    'pct_chg': float(item.change_percent) if item.change_percent else None
+                })
+        
+        return jsonify({
+            'code': 200,
+            'message': '操作成功',
+            'data': result
+        })
+    except Exception as e:
+        logger.error(f"获取K线数据失败: {e}")
+        return jsonify({
+            'code': 500,
+            'message': f'获取K线数据失败: {str(e)}'
+        }), 500
 
 
 def register_sync_blueprint(app):

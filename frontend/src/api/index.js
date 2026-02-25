@@ -34,10 +34,6 @@ export function getReviewTaskResults(id) {
   return request.get(`/review/task/${id}/results`)
 }
 
-export function getReviewReport(id) {
-  return request.get(`/review/task/${id}/report`)
-}
-
 // 创建 Baostock 复盘任务
 export function createBaostockReviewTask(data) {
   const taskData = {
@@ -46,6 +42,10 @@ export function createBaostockReviewTask(data) {
     review_type: data.reviewType || 'daily',
     dimensions: data.dimensions || [],
     rules: data.rules || []
+  }
+  // 如果有 overwrite 参数
+  if (data.overwrite) {
+    taskData.overwrite = true
   }
   return request.post('/review/task/baostock', taskData)
 }
@@ -58,6 +58,11 @@ export function getReviewTaskChart(id) {
 // 删除复盘任务
 export function deleteReviewTask(id) {
   return request.delete(`/review/task/${id}`)
+}
+
+// 获取首页仪表盘数据
+export function getDashboardData() {
+  return request.get('/review/dashboard')
 }
 
 // ==================== 股票相关API ====================
@@ -113,6 +118,11 @@ export function startSyncTask(id) {
   return request.post(`/sync/task/${id}/start`)
 }
 
+// 停止同步任务
+export function stopSyncTask(id) {
+  return request.post(`/sync/task/${id}/stop`)
+}
+
 // 删除同步任务
 export function deleteSyncTask(id) {
   return request.delete(`/sync/task/${id}`)
@@ -126,6 +136,13 @@ export function getFrequencyOptions() {
 // 获取股票类型选项
 export function getStockTypeOptions() {
   return request.get('/sync/stock-type/options')
+}
+
+// 获取股票K线数据
+export function getStockKline(stockCode, frequency = 'd', limit = 100) {
+  return request.get(`/sync/kline/${stockCode}`, {
+    params: { frequency, limit }
+  })
 }
 
 // ==================== 元数据相关API ====================
@@ -166,8 +183,8 @@ export function getSectors(params) {
 }
 
 // 获取板块成分股
-export function getSectorStocks(sectorCode) {
-  return request.get(`/metadata/sectors/${sectorCode}/stocks`)
+export function getSectorStocks(sectorCode, params) {
+  return request.get(`/metadata/sectors/${sectorCode}/stocks`, { params })
 }
 
 // 获取股票基本信息和板块（使用元数据接口）
@@ -185,4 +202,81 @@ export function initStockFromAKShare(data = {}) {
 // 从AKShare初始化全部元数据（股票 + 板块）
 export function initFullFromAKShare(data = {}) {
   return request.post('/metadata/init/full-from-akshare', data)
+}
+
+// 获取股票列表（包含所属板块信息）
+// type: 股票类型过滤 (stock-股票, index-指数, etf-ETF, 空=全部)
+// search: 搜索关键词（代码或名称）
+export function getStocks(type = '', search = '') {
+  const params = {}
+  if (type) {
+    params.type = type
+  }
+  if (search) {
+    params.search = search
+  }
+  return request.get('/metadata/stocks', { params })
+}
+
+// 获取所有板块列表（用于下拉选择）
+export function getAllSectors() {
+  return request.get('/metadata/sectors/all')
+}
+
+// 将股票添加到板块
+export function addStockToSector(data) {
+  return request.post('/metadata/stock-sector', data)
+}
+
+// 将股票从板块移除
+export function removeStockFromSector(data) {
+  return request.delete('/metadata/stock-sector', { data })
+}
+
+// 创建新板块
+export function createSector(data) {
+  return request.post('/metadata/sectors', data)
+}
+
+// ==================== 交割单相关API ====================
+
+// 导入交割单
+export function importDelivery(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  return request.post('/metadata/delivery/import', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    }
+  })
+}
+
+// 获取交割单列表
+export function getDeliveryList(params) {
+  return request.get('/metadata/delivery/list', { params })
+}
+
+// 获取交割单统计
+export function getDeliveryStats() {
+  return request.get('/metadata/delivery/stats')
+}
+
+// 根据股票代码获取交割单列表
+export function getDeliveryByStock(stockCode, params) {
+  return request.get(`/metadata/delivery/by-stock/${stockCode}`, { params })
+}
+
+// 获取交割单中涉及的股票列表
+export function getDeliveryStocks(params) {
+  return request.get('/metadata/delivery/stocks', { params })
+}
+
+// 获取指定股票的交割单汇总
+export function getDeliverySummary(stockCode) {
+  return request.get(`/metadata/delivery/summary/${stockCode}`)
+}
+
+// 更新交割单复盘记录
+export function updateDeliveryReviewNote(deliveryId, reviewNote) {
+  return request.put(`/metadata/delivery/${deliveryId}/review-note`, { review_note: reviewNote })
 }

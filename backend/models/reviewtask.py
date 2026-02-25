@@ -46,8 +46,28 @@ class ReviewTask(db.Model):
         """转换为字典"""
         return {
             'id': self.id,
+            'taskName': self.task_name,
+            'dataSourceType': self.data_source_type,
+            'dataSourceName': self.data_source_name,
+            'dataSourceDesc': self.data_source_desc,
+            'filePath': self.file_path,
+            'stockCode': self.stock_code,
+            'tradeDate': self.trade_date,
+            'rowCount': self.row_count,
+            'columnCount': self.column_count,
+            'dataSummary': self.data_summary,
+            'reviewType': self.review_type,
+            'dimensions': self.dimensions,
+            'rules': self.rules,
+            'status': self.status,
+            'resultSummary': self.result_summary,
+            'startTime': self.start_time.isoformat() if self.start_time else None,
+            'endTime': self.end_time.isoformat() if self.end_time else None,
+            'errorMessage': self.error_message,
+            'createTime': self.create_time.isoformat() if self.create_time else None,
+            'updateTime': self.update_time.isoformat() if self.update_time else None,
+            # 兼容下划线命名
             'task_name': self.task_name,
-            # 数据源信息
             'data_source_type': self.data_source_type,
             'data_source_name': self.data_source_name,
             'data_source_desc': self.data_source_desc,
@@ -57,17 +77,13 @@ class ReviewTask(db.Model):
             'row_count': self.row_count,
             'column_count': self.column_count,
             'data_summary': self.data_summary,
-            # 复盘配置
             'review_type': self.review_type,
             'dimensions': self.dimensions,
             'rules': self.rules,
-            # 执行状态
-            'status': self.status,
             'result_summary': self.result_summary,
             'start_time': self.start_time.isoformat() if self.start_time else None,
             'end_time': self.end_time.isoformat() if self.end_time else None,
             'error_message': self.error_message,
-            # 时间戳
             'create_time': self.create_time.isoformat() if self.create_time else None,
             'update_time': self.update_time.isoformat() if self.update_time else None
         }

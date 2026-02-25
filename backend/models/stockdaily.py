@@ -69,6 +69,7 @@ class StockDaily(db.Model):
     
     # 复合索引
     __table_args__ = (
+        db.UniqueConstraint('stock_code', 'trade_date', name='uq_stock_daily_code_date'),
         db.Index('idx_stock_date', 'stock_code', 'trade_date'),
         db.Index('idx_trade_date', 'trade_date'),
         db.Index('idx_turnover', 'trade_date', 'turnover'),

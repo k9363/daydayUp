@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: daydayup-backend
+    ports:
+      - "5000:5000"
+    environment:
+      - DB_HOST=${DB_HOST:-192.168.31.123}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_USER=${DB_USER:-root}
+      - DB_PASSWORD=${DB_PASSWORD:-123456}
+      - DB_NAME=${DB_NAME:-daydayup}
+      - DB_TYPE=mysql
+      - FLASK_ENV=production
+    volumes:
+      - ./backend/uploads:/app/uploads
+    restart: unless-stopped
+    networks:
+      - daydayup-network
+
+  frontend:
+    image: nginx:alpine
+    container_name: daydayup-frontend
+    ports:
+      - "80:80"
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - daydayup-network
+
+networks:
+  daydayup-network:
+    driver: bridge

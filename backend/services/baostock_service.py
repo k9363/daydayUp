@@ -9,7 +9,7 @@ import time
 import logging
 
 from extensions import db
-from models.stockdaily import StockDaily
+from models.kline import StockDailyKLine
 
 
 logger = logging.getLogger(__name__)
@@ -649,7 +649,7 @@ class BaostockService:
         Raises:
             ValueError: 如果指定日期不是交易日
         """
-        from models.stockdaily import StockDaily
+        from models.kline import StockDailyKLine
 
         # 0. 检查指定日期是否为交易日
         # 先登录检查，检查完不登出，继续使用
@@ -664,39 +664,138 @@ class BaostockService:
             self.logout()  # 确保登出
             raise ValueError(f"指定日期 {date} 不是交易日，请选择A股交易日期（周一至周五，节假日除外）")
 
-        # 1. 先查库：检查是否已有该日期的数据
-        existing_data = db_session.query(StockDaily).filter(
-            StockDaily.trade_date == date
+        # 1. 从元数据获取所有需要K线的股票列表
+        from models.stockbasic import StockBasic
+        all_stocks = db_session.query(StockBasic.stock_code).filter(
+            StockBasic.stock_type == 'stock'  # 只获取股票类型
         ).all()
+        expected_stock_codes = [s.stock_code for s in all_stocks]
+        logger.info(f"从元数据获取到 {len(expected_stock_codes)} 只股票需要获取K线数据")
 
-        if existing_data:
-            print(f"数据库中已存在 {date} 的股票数据，共 {len(existing_data)} 条")
-            # 数据已存在时也尝试补充元数据（确保元数据完整）
+        if not expected_stock_codes:
+            raise Exception("元数据表中没有找到股票列表，请先进行元数据初始化")
+
+        # 2. 批量查询数据库中已有该日期数据的股票
+        existing_codes = set()
+        # 分批查询避免SQL过长
+        batch_size = 1000
+        for i in range(0, len(expected_stock_codes), batch_size):
+            batch_codes = expected_stock_codes[i:i+batch_size]
+            existing = db_session.query(StockDailyKLine.stock_code).filter(
+                StockDailyKLine.trade_date == date,
+                StockDailyKLine.stock_code.in_(batch_codes)
+            ).distinct().all()
+            existing_codes.update([e.stock_code for e in existing])
+
+        logger.info(f"数据库中已有 {len(existing_codes)} 只股票的 {date} 日K数据")
+
+        # 3. 找出缺失的股票
+        missing_codes = [code for code in expected_stock_codes if code not in existing_codes]
+        logger.info(f"缺失 {len(missing_codes)} 只股票的 {date} 日K数据")
+
+        # 4. 如果全部存在，直接返回
+        if not missing_codes:
+            logger.info(f"数据库中已存在 {date} 的完整股票数据，共 {len(existing_codes)} 条")
+            # 补充元数据
             try:
                 from services.metadata_service import get_metadata_service
                 from services.metadata_config import is_auto_supplement_enabled
-
-                logger.info(f"数据已存在，检查是否需要补充元数据...")
                 if is_auto_supplement_enabled('sync'):
                     metadata_service = get_metadata_service()
-                    stock_codes = [record.stock_code for record in existing_data]
-                    
                     result = metadata_service.supplement_metadata(
-                        stock_codes=stock_codes,
+                        stock_codes=list(existing_codes),
                         db_session=db_session,
                         context='sync'
                     )
                     logger.info(f"元数据补充完成: {result}")
-                else:
-                    logger.info("数据同步时自动补充元数据已禁用")
-
             except Exception as e:
                 logger.error(f"补充元数据失败: {e}")
-                # 元数据补充失败不应影响主流程
 
+            # 返回已有数据
+            existing_data = db_session.query(StockDailyKLine).filter(
+                StockDailyKLine.trade_date == date
+            ).all()
             return [record.to_dict() for record in existing_data]
 
-        # 2. 数据库没有，从API获取
+        # 5. 对缺失的股票进行补充
+        logger.info(f"开始补充 {len(missing_codes)} 只缺失股票的K线数据...")
+        
+        # 使用缺失股票列表获取K线数据
+        self.login()
+        try:
+            # 构建股票代码和名称映射
+            from models.stockbasic import StockBasic
+            stock_basics = db_session.query(StockBasic.stock_code, StockBasic.stock_name).all()
+            stock_name_map = {sb.stock_code: sb.stock_name for sb in stock_basics if sb.stock_code in missing_codes}
+            stock_codes = missing_codes
+            
+            if not stock_codes:
+                logger.info("没有需要补充的股票")
+                existing_data = db_session.query(StockDailyKLine).filter(
+                    StockDailyKLine.trade_date == date
+                ).all()
+                return [record.to_dict() for record in existing_data]
+
+            # 逐只获取日线数据
+            batch_data = []
+            batch_size = 100
+            request_interval = 0.1  # 加快请求速度
+            max_retries = 3
+
+            success_count = 0
+            total_saved = 0
+
+            for i, code in enumerate(stock_codes):
+                retry_count = 0
+                while retry_count < max_retries:
+                    try:
+                        rs = bs.query_history_k_data_plus(
+                            code=code,
+                            start_date=date,
+                            end_date=date,
+                            fields="date,code,open,high,low,close,preclose,volume,amount,pctChg,turn,peTTM,psTTM",
+                            frequency='d',
+                            adjustflag='2'
+                        )
+
+                        if rs.error_code == '0':
+                            while rs.next():
+                                row = dict(zip(rs.fields, rs.get_row_data()))
+                                batch_data.append(row)
+                            success_count += 1
+                        break
+                    except Exception as e:
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            time.sleep(1)
+                        else:
+                            logger.warning(f"获取 {code} K线数据失败: {e}")
+                            break
+                
+                time.sleep(request_interval)
+
+                # 每批数据落库
+                if len(batch_data) >= batch_size:
+                    saved_count = self._save_daily_kline_batch(db_session, batch_data, stock_name_map, date)
+                    total_saved += saved_count
+                    batch_data = []
+                    logger.info(f"  已补充 {i + 1}/{len(stock_codes)} 只股票")
+
+            # 保存最后一批
+            if batch_data:
+                saved_count = self._save_daily_kline_batch(db_session, batch_data, stock_name_map, date)
+                total_saved += saved_count
+
+            logger.info(f"  共补充 {success_count} 只股票，成功保存 {total_saved} 条数据")
+
+            # 返回所有数据
+            all_data = db_session.query(StockDailyKLine).filter(
+                StockDailyKLine.trade_date == date
+            ).all()
+            return [record.to_dict() for record in all_data]
+
+        finally:
+            pass
         print(f"数据库中未找到 {date} 的股票数据，开始从Baostock获取...")
 
         # 已登录，直接使用
@@ -866,6 +965,310 @@ class BaostockService:
             # 确保登出
             self.logout()
 
+    def fetch_and_save_weekly_data(self, date, db_session, max_retries=3):
+        """
+        获取指定日期所在周的周K线数据
+
+        Args:
+            date: 交易日期 (YYYY-MM-DD)
+            db_session: 数据库会话
+            max_retries: 最大重试次数
+
+        Returns:
+            list: 周K线数据字典列表
+        """
+        from models.kline import StockWeeklyKLine
+
+        # 计算周的起始和结束日期
+        date_obj = datetime.strptime(date, '%Y-%m-%d')
+        # 计算该日期所在周的周一和周日
+        monday = date_obj - timedelta(days=date_obj.weekday())
+        sunday = monday + timedelta(days=6)
+        start_date = monday.strftime('%Y-%m-%d')
+        end_date = sunday.strftime('%Y-%m-%d')
+
+        logger.info(f"📊 正在获取 {start_date} ~ {end_date} 的周K线数据...")
+
+        # 先查库：检查是否已有该周的数据
+        existing_data = db_session.query(StockWeeklyKLine).filter(
+            StockWeeklyKLine.trade_date == date
+        ).all()
+
+        if existing_data:
+            logger.info(f"数据库中已存在 {date} 的周K线数据，共 {len(existing_data)} 条")
+            # 检查完整性：周K正常应该有几万条数据（5000+股票 * 多年数据）
+            if len(existing_data) >= 3000:
+                return [record.to_dict() for record in existing_data]
+            logger.warning(f"⚠️ 数据库中 {date} 的周K数据不完整（仅 {len(existing_data)} 条），准备重新获取...")
+
+        # 数据库没有，从API获取
+        logger.info(f"数据库中未找到 {date} 的周K线数据，开始从Baostock获取...")
+
+        self.login()
+        try:
+            # 获取股票列表
+            stock_list = self.get_stock_list(date=date)
+            if not stock_list:
+                logger.warning("未获取到股票列表")
+                return []
+
+            # 过滤掉非A股
+            stock_codes = []
+            stock_name_map = {}
+            stock_type_map = {}
+            for item in stock_list:
+                code = item.get('code', '')
+                name = item.get('name', '')
+                board = item.get('board', '')
+                status = item.get('status', '')
+                stock_type = item.get('type', '')
+
+                if (len(code) >= 8 and code[2:8].replace('.', '').isdigit() and
+                    board not in ['指数', '基金', '债券', '期货', '期权', '港股', 'B股'] and
+                    status not in ['退市', '暂停上市', '终止上市', '0']):
+                    stock_codes.append(code)
+                    stock_name_map[code] = name
+                    stock_type_map[code] = stock_type
+
+            logger.info(f"获取到 {len(stock_codes)} 只A股股票")
+
+            # 获取周K线数据
+            batch_data = []
+            request_interval = 0.5
+            success_count = 0
+
+            for i, code in enumerate(stock_codes):
+                retry_count = 0
+                while retry_count < max_retries:
+                    try:
+                        rs = bs.query_history_k_data_plus(
+                            code=code,
+                            start_date=start_date,
+                            end_date=end_date,
+                            fields="date,code,open,high,low,close,volume,amount,pctChg",
+                            frequency='w',
+                            adjustflag='2'
+                        )
+
+                        if rs.error_code == '0':
+                            while rs.next():
+                                row = dict(zip(rs.fields, rs.get_row_data()))
+                                if row.get('close'):  # 只保存有数据的记录
+                                    batch_data.append(row)
+                            success_count += 1
+                        break
+                    except Exception as e:
+                        logger.warning(f"获取 {code} 周K线失败: {e}")
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            time.sleep(2)
+
+                time.sleep(request_interval)
+
+                if (i + 1) % 100 == 0:
+                    logger.info(f"  已处理 {i + 1}/{len(stock_codes)} 只股票")
+
+            logger.info(f"✅ 获取到 {len(batch_data)} 条周K线数据")
+
+            # 保存到数据库
+            saved_count = 0
+            for row in batch_data:
+                if not row.get('code') or row.get('close') == '':
+                    continue
+
+                code = row['code']
+                week_date = row.get('date', '')
+
+                # 检查是否已存在
+                existing = db_session.query(StockWeeklyKLine).filter(
+                    StockWeeklyKLine.stock_code == code,
+                    StockWeeklyKLine.trade_date == date
+                ).first()
+
+                if existing:
+                    continue
+
+                try:
+                    weekly = StockWeeklyKLine()
+                    weekly.stock_code = code
+                    weekly.trade_date = date
+                    weekly.stock_name = stock_name_map.get(code, '')
+                    weekly.stock_type = stock_type_map.get(code, '未知')
+                    weekly.week_open = float(row.get('open', 0)) if row.get('open') else None
+                    weekly.week_close = float(row.get('close', 0)) if row.get('close') else None
+                    weekly.week_high = float(row.get('high', 0)) if row.get('high') else None
+                    weekly.week_low = float(row.get('low', 0)) if row.get('low') else None
+                    weekly.volume = float(row.get('volume', 0)) if row.get('volume') else None
+                    weekly.amount = float(row.get('amount', 0)) * 1000 if row.get('amount') else None  # 千元转元
+                    weekly.pct_chg = float(row.get('pctChg', 0)) if row.get('pctChg') else None
+                    db_session.add(weekly)
+                    saved_count += 1
+                except Exception as e:
+                    logger.warning(f"保存周K线失败: {code} - {e}")
+
+            db_session.commit()
+            logger.info(f"✅ 周K线数据保存完成: {saved_count} 条")
+
+            # 返回数据
+            return db_session.query(StockWeeklyKLine).filter(
+                StockWeeklyKLine.trade_date == date
+            ).all()
+
+        finally:
+            self.logout()
+
+    def fetch_and_save_monthly_data(self, date, db_session, max_retries=3):
+        """
+        获取指定日期所在月份的月K线数据
+
+        Args:
+            date: 交易日期 (YYYY-MM-DD)
+            db_session: 数据库会话
+            max_retries: 最大重试次数
+
+        Returns:
+            list: 月K线数据字典列表
+        """
+        from models.kline import StockMonthlyKLine
+
+        # 计算月份的起始和结束日期
+        date_obj = datetime.strptime(date, '%Y-%m-%d')
+        start_date = date_obj.replace(day=1).strftime('%Y-%m-%d')
+        # 月份最后一天
+        if date_obj.month == 12:
+            end_date = date_obj.replace(year=date_obj.year + 1, month=1, day=1) - timedelta(days=1)
+        else:
+            end_date = date_obj.replace(month=date_obj.month + 1, day=1) - timedelta(days=1)
+        end_date = end_date.strftime('%Y-%m-%d')
+
+        logger.info(f"📊 正在获取 {start_date} ~ {end_date} 的月K线数据...")
+
+        # 先查库
+        existing_data = db_session.query(StockMonthlyKLine).filter(
+            StockMonthlyKLine.trade_date == date
+        ).all()
+
+        if existing_data:
+            logger.info(f"数据库中已存在 {date} 的月K线数据，共 {len(existing_data)} 条")
+            # 检查完整性：月K正常应该有几万条数据
+            if len(existing_data) >= 3000:
+                return [record.to_dict() for record in existing_data]
+            logger.warning(f"⚠️ 数据库中 {date} 的月K数据不完整（仅 {len(existing_data)} 条），准备重新获取...")
+
+        # 数据库没有，从API获取
+        logger.info(f"数据库中未找到 {date} 的月K线数据，开始从Baostock获取...")
+
+        self.login()
+        try:
+            # 获取股票列表
+            stock_list = self.get_stock_list(date=date)
+            if not stock_list:
+                logger.warning("未获取到股票列表")
+                return []
+
+            # 过滤掉非A股
+            stock_codes = []
+            stock_name_map = {}
+            stock_type_map = {}
+            for item in stock_list:
+                code = item.get('code', '')
+                name = item.get('name', '')
+                board = item.get('board', '')
+                status = item.get('status', '')
+                stock_type = item.get('type', '')
+
+                if (len(code) >= 8 and code[2:8].replace('.', '').isdigit() and
+                    board not in ['指数', '基金', '债券', '期货', '期权', '港股', 'B股'] and
+                    status not in ['退市', '暂停上市', '终止上市', '0']):
+                    stock_codes.append(code)
+                    stock_name_map[code] = name
+                    stock_type_map[code] = stock_type
+
+            logger.info(f"获取到 {len(stock_codes)} 只A股股票")
+
+            # 获取月K线数据
+            batch_data = []
+            request_interval = 0.5
+            success_count = 0
+
+            for i, code in enumerate(stock_codes):
+                retry_count = 0
+                while retry_count < max_retries:
+                    try:
+                        rs = bs.query_history_k_data_plus(
+                            code=code,
+                            start_date=start_date,
+                            end_date=end_date,
+                            fields="date,code,open,high,low,close,volume,amount,pctChg",
+                            frequency='m',
+                            adjustflag='2'
+                        )
+
+                        if rs.error_code == '0':
+                            while rs.next():
+                                row = dict(zip(rs.fields, rs.get_row_data()))
+                                if row.get('close'):
+                                    batch_data.append(row)
+                            success_count += 1
+                        break
+                    except Exception as e:
+                        logger.warning(f"获取 {code} 月K线失败: {e}")
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            time.sleep(2)
+
+                time.sleep(request_interval)
+
+                if (i + 1) % 100 == 0:
+                    logger.info(f"  已处理 {i + 1}/{len(stock_codes)} 只股票")
+
+            logger.info(f"✅ 获取到 {len(batch_data)} 条月K线数据")
+
+            # 保存到数据库
+            saved_count = 0
+            for row in batch_data:
+                if not row.get('code') or row.get('close') == '':
+                    continue
+
+                code = row['code']
+
+                # 检查是否已存在
+                existing = db_session.query(StockMonthlyKLine).filter(
+                    StockMonthlyKLine.stock_code == code,
+                    StockMonthlyKLine.trade_date == date
+                ).first()
+
+                if existing:
+                    continue
+
+                try:
+                    monthly = StockMonthlyKLine()
+                    monthly.stock_code = code
+                    monthly.trade_date = date
+                    monthly.stock_name = stock_name_map.get(code, '')
+                    monthly.stock_type = stock_type_map.get(code, '未知')
+                    monthly.month_open = float(row.get('open', 0)) if row.get('open') else None
+                    monthly.month_close = float(row.get('close', 0)) if row.get('close') else None
+                    monthly.month_high = float(row.get('high', 0)) if row.get('high') else None
+                    monthly.month_low = float(row.get('low', 0)) if row.get('low') else None
+                    monthly.volume = float(row.get('volume', 0)) if row.get('volume') else None
+                    monthly.amount = float(row.get('amount', 0)) * 1000 if row.get('amount') else None
+                    monthly.pct_chg = float(row.get('pctChg', 0)) if row.get('pctChg') else None
+                    db_session.add(monthly)
+                    saved_count += 1
+                except Exception as e:
+                    logger.warning(f"保存月K线失败: {code} - {e}")
+
+            db_session.commit()
+            logger.info(f"✅ 月K线数据保存完成: {saved_count} 条")
+
+            return db_session.query(StockMonthlyKLine).filter(
+                StockMonthlyKLine.trade_date == date
+            ).all()
+
+        finally:
+            self.logout()
+
     def _get_type_from_code(self, code):
         """
         根据股票代码判断股票类型
@@ -970,7 +1373,12 @@ class BaostockService:
             if amount is not None:
                 amount = float(amount) * 1000  # 千元转元
 
-            record = StockDaily(
+            # 涨跌额 = 收盘价 - 昨收价
+            change = 0
+            if row.get('close') and row.get('preclose'):
+                change = float(row.get('close', 0)) - float(row.get('preclose', 0))
+
+            record = StockDailyKLine(
                 stock_code=code,
                 stock_name=stock_name,
                 trade_date=trade_date,
@@ -982,6 +1390,7 @@ class BaostockService:
                 volume=row.get('volume', 0) or None,
                 turnover=amount,
                 turnover_rate=row.get('turn', 0) or None,
+                change=change,
                 change_percent=row.get('pctChg', 0) or None,
                 industry=info.get('industry', '未知'),
                 market=stock_type
@@ -990,6 +1399,88 @@ class BaostockService:
             saved_count += 1
 
         db_session.commit()
+        return saved_count
+
+    def _save_daily_kline_batch(self, db_session, batch_data, stock_name_map, trade_date):
+        """
+        批量保存日K线数据到数据库（简化版）
+
+        Args:
+            db_session: 数据库会话
+            batch_data: 批次数据列表
+            stock_name_map: 股票代码到名称的映射
+            trade_date: 交易日期
+
+        Returns:
+            int: 保存的记录数
+        """
+        from models.stockbasic import StockBasic
+        from models.kline import StockDailyKLine
+
+        # 预加载所有股票名称
+        stock_basics = db_session.query(StockBasic.stock_code, StockBasic.stock_name).all()
+        db_stock_name_map = {sb.stock_code: sb.stock_name for sb in stock_basics}
+
+        saved_count = 0
+        records_to_insert = []
+
+        for row in batch_data:
+            if not row.get('code') or row.get('close') == '':
+                continue
+
+            code = row['code']
+            # 股票名称
+            stock_name = stock_name_map.get(code, '') or db_stock_name_map.get(code, '')
+
+            # 成交额转换：Baostock返回单位是千元，转换为元
+            amount = row.get('amount', 0)
+            if amount is not None:
+                amount = float(amount) * 1000
+
+            # 涨跌额 = 收盘价 - 昨收价
+            change = 0
+            try:
+                close = float(row.get('close', 0) or 0)
+                preclose = float(row.get('preclose', 0) or 0)
+                change = close - preclose
+            except:
+                pass
+
+            # 创建记录
+            record = StockDailyKLine(
+                stock_code=code,
+                stock_name=stock_name,
+                trade_date=trade_date,
+                open_price=float(row.get('open', 0) or 0),
+                high_price=float(row.get('high', 0) or 0),
+                low_price=float(row.get('low', 0) or 0),
+                close_price=float(row.get('close', 0) or 0),
+                pre_close_price=float(row.get('preclose', 0) or 0),
+                volume=float(row.get('volume', 0) or 0),
+                turnover=amount,
+                change_percent=float(row.get('pctChg', 0) or 0),
+                change=change
+            )
+            records_to_insert.append(record)
+
+        # 批量插入
+        if records_to_insert:
+            try:
+                db_session.bulk_save_objects(records_to_insert)
+                db_session.commit()
+                saved_count = len(records_to_insert)
+            except Exception as e:
+                db_session.rollback()
+                logger.error(f"批量保存K线数据失败: {e}")
+                # 尝试逐条保存
+                for record in records_to_insert:
+                    try:
+                        db_session.add(record)
+                        db_session.commit()
+                        saved_count += 1
+                    except:
+                        db_session.rollback()
+
         return saved_count
 
 

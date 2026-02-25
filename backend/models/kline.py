@@ -14,11 +14,9 @@ class StockSector(db.Model):
     __tablename__ = 'stock_sector'
 
     id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
-    sector_code = db.Column(db.String(20), unique=True, nullable=False, comment='板块代码')
+    sector_code = db.Column(db.String(50), unique=True, nullable=False, comment='板块代码')
     sector_name = db.Column(db.String(100), nullable=False, comment='板块名称')
     sector_type = db.Column(db.String(20), nullable=False, comment='板块类型: industry-行业, concept-概念, area-地区')
-    parent_code = db.Column(db.String(20), nullable=True, comment='父板块代码')
-    level = db.Column(db.Integer, default=1, comment='板块层级')
     description = db.Column(db.String(500), nullable=True, comment='板块描述')
     stock_count = db.Column(db.Integer, default=0, comment='包含股票数量')
     create_time = db.Column(db.DateTime, default=datetime.now, comment='创建时间')
@@ -29,7 +27,6 @@ class StockSector(db.Model):
 
     __table_args__ = (
         db.Index('idx_sector_type', 'sector_type'),
-        db.Index('idx_parent_code', 'parent_code'),
     )
 
     def to_dict(self):
@@ -38,8 +35,6 @@ class StockSector(db.Model):
             'sector_code': self.sector_code,
             'sector_name': self.sector_name,
             'sector_type': self.sector_type,
-            'parent_code': self.parent_code,
-            'level': self.level,
             'description': self.description,
             'stock_count': self.stock_count,
             'create_time': self.create_time.strftime('%Y-%m-%d %H:%M:%S') if self.create_time else None,
@@ -57,8 +52,6 @@ class StockSectorRelation(db.Model):
     id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
     stock_code = db.Column(db.String(20), nullable=False, comment='股票代码')
     sector_id = db.Column(db.BigInteger, db.ForeignKey('stock_sector.id'), nullable=False, comment='板块ID')
-    is_main = db.Column(db.Integer, default=0, comment='是否主板块: 0-否, 1-是')
-    weight = db.Column(db.Numeric(5, 2), default=100.00, comment='权重百分比')
     create_time = db.Column(db.DateTime, default=datetime.now, comment='创建时间')
 
     __table_args__ = (
@@ -72,10 +65,33 @@ class StockSectorRelation(db.Model):
             'stock_code': self.stock_code,
             'sector_id': self.sector_id,
             'sector_name': self.sector.sector_name if self.sector else None,
-            'is_main': self.is_main,
-            'weight': float(self.weight) if self.weight else 0,
             'create_time': self.create_time.strftime('%Y-%m-%d %H:%M:%S') if self.create_time else None,
         }
+
+
+class MetadataProgress(db.Model):
+    """
+    元数据获取进度表
+    记录断点续传进度，支持失败重试
+    """
+    __tablename__ = 'metadata_progress'
+
+    id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
+    task_type = db.Column(db.String(50), nullable=False, comment='任务类型: industry_sector-行业板块, concept_sector-概念板块')
+    target_name = db.Column(db.String(100), nullable=True, comment='目标名称: 行业名称/概念名称')
+    status = db.Column(db.String(20), default='pending', comment='状态: pending-待处理, processing-处理中, completed-已完成, failed-失败')
+    retry_count = db.Column(db.Integer, default=0, comment='重试次数')
+    max_retries = db.Column(db.Integer, default=3, comment='最大重试次数')
+    error_message = db.Column(db.String(500), nullable=True, comment='错误信息')
+    started_at = db.Column(db.DateTime, nullable=True, comment='开始时间')
+    completed_at = db.Column(db.DateTime, nullable=True, comment='完成时间')
+    created_at = db.Column(db.DateTime, default=datetime.now, comment='创建时间')
+    updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now, comment='更新时间')
+
+    __table_args__ = (
+        db.Index('idx_task_type_status', 'task_type', 'status'),
+        db.UniqueConstraint('task_type', 'target_name', name='uq_task_target'),
+    )
 
 
 class BaseKLine(db.Model):
@@ -113,6 +129,7 @@ class StockDailyKLine(BaseKLine):
     market = db.Column(db.String(20), comment='市场类型')
 
     __table_args__ = (
+        db.UniqueConstraint('stock_code', 'trade_date', name='uq_stock_daily_kline_code_date'),
         db.Index('idx_daily_stock_date', 'stock_code', 'trade_date'),
         db.Index('idx_daily_trade_date', 'trade_date'),
     )
@@ -155,6 +172,7 @@ class StockWeeklyKLine(BaseKLine):
     avg_price = db.Column(db.Numeric(15, 4), comment='周均价')
 
     __table_args__ = (
+        db.UniqueConstraint('stock_code', 'trade_date', name='uq_stock_weekly_code_date'),
         db.Index('idx_weekly_stock_date', 'stock_code', 'trade_date'),
         db.Index('idx_weekly_trade_date', 'trade_date'),
     )
@@ -197,6 +215,7 @@ class StockMonthlyKLine(BaseKLine):
     avg_price = db.Column(db.Numeric(15, 4), comment='月均价')
 
     __table_args__ = (
+        db.UniqueConstraint('stock_code', 'trade_date', name='uq_stock_monthly_code_date'),
         db.Index('idx_monthly_stock_date', 'stock_code', 'trade_date'),
         db.Index('idx_monthly_trade_date', 'trade_date'),
     )
@@ -283,6 +302,7 @@ class DataSyncTask(db.Model):
     end_time = db.Column(db.DateTime, comment='结束时间')
     create_time = db.Column(db.DateTime, default=datetime.now, comment='创建时间')
     update_time = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now, comment='更新时间')
+    processed_codes = db.Column(db.Text(length=16777215), nullable=True, comment='已处理的股票代码列表，JSON格式')
 
     __table_args__ = (
         db.Index('idx_sync_status', 'status'),
@@ -303,6 +323,7 @@ class DataSyncTask(db.Model):
             'total_records': self.total_records,
             'saved_records': self.saved_records,
             'error_message': self.error_message,
+            'processed_codes': self.processed_codes,
             'progress': round(self.processed_stocks / self.total_stocks * 100, 2) if self.total_stocks > 0 else 0,
             'start_time': self.start_time.strftime('%Y-%m-%d %H:%M:%S') if self.start_time else None,
             'end_time': self.end_time.strftime('%Y-%m-%d %H:%M:%S') if self.end_time else None,

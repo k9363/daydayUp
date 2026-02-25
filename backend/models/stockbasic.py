@@ -21,7 +21,14 @@ class StockBasic(db.Model):
     
     # 交易所和市场
     exchange = db.Column(db.String(10), comment='交易所: sh-上海, sz-深圳')
-    market = db.Column(db.String(20), comment='市场类型: 主板/中小板/创业板/科创板')
+    
+    # 市场类型 - 复合字段: {type}_{market} 格式
+    # 例如: stock_sh (沪市股票), index_sz (深市指数), etf_sh (沪市ETF)
+    # type: stock(股票), index(指数), etf(ETF)
+    market = db.Column(db.String(20), comment='市场类型: stock_sh/指数_sz/ETF等')
+    
+    # 原始类型字段 (冗余存储，方便查询)
+    stock_type = db.Column(db.String(20), comment='股票类型: stock-股票, index-指数, etf-ETF')
     
     # 公司基本信息
     company_name = db.Column(db.String(200), comment='公司全称')
@@ -36,6 +43,8 @@ class StockBasic(db.Model):
     # 股本信息
     total_shares = db.Column(db.Numeric(20, 2), comment='总股本(万股)')
     circulate_shares = db.Column(db.Numeric(20, 2), comment='流通股本(万股)')
+    total_market_value = db.Column(db.Numeric(20, 2), comment='总市值(元)')
+    circulate_market_value = db.Column(db.Numeric(20, 2), comment='流通市值(元)')
     
     # 扩展信息
     remarks = db.Column(db.String(500), comment='备注')
@@ -71,6 +80,8 @@ class StockBasic(db.Model):
             'is_hs': self.is_hs,
             'total_shares': float(self.total_shares) if self.total_shares else None,
             'circulate_shares': float(self.circulate_shares) if self.circulate_shares else None,
+            'total_market_value': float(self.total_market_value) if self.total_market_value else None,
+            'circulate_market_value': float(self.circulate_market_value) if self.circulate_market_value else None,
             'remarks': self.remarks,
             'create_time': self.create_time.strftime('%Y-%m-%d %H:%M:%S') if self.create_time else None,
             'update_time': self.update_time.strftime('%Y-%m-%d %H:%M:%S') if self.update_time else None,

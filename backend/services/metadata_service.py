@@ -12,7 +12,7 @@ from datetime import datetime
 from collections import defaultdict
 from extensions import db
 from models.stockbasic import StockBasic
-from models.kline import StockSector, StockSectorRelation
+from models.kline import StockSector, StockSectorRelation, MetadataProgress
 from services.metadata_config import (
     get_metadata_config,
     is_auto_supplement_enabled,
@@ -350,7 +350,6 @@ class MetadataService:
                     sector_code=f"ind_{industry_name[:18]}",
                     sector_name=industry_name,
                     sector_type='industry',
-                    level=1,
                     stock_count=len(stocks),
                 )
                 db_session.add(sector)
@@ -391,7 +390,6 @@ class MetadataService:
                     sector_code=f"area_{area_name[:18]}",
                     sector_name=area_name,
                     sector_type='area',
-                    level=1,
                     stock_count=len(stocks),
                 )
                 db_session.add(sector)
@@ -468,8 +466,7 @@ class MetadataService:
                     if industry and industry != '未知':
                         stock_sector_map[code].append({
                             'sector_name': industry,
-                            'sector_type': 'industry',
-                            'is_main': 1
+                            'sector_type': 'industry'
                         })
                     
                     # 添加地区关联
@@ -477,8 +474,7 @@ class MetadataService:
                     if area and area != '未知':
                         stock_sector_map[code].append({
                             'sector_name': area,
-                            'sector_type': 'area',
-                            'is_main': 0
+                            'sector_type': 'area'
                         })
             
             # 3. 确保板块信息已存在
@@ -516,9 +512,7 @@ class MetadataService:
                     # 新增关联
                     relation = StockSectorRelation(
                         stock_code=code,
-                        sector_id=sector.id,
-                        is_main=sector_info['is_main'],
-                        weight=100.00 if sector_info['is_main'] else 50.00
+                        sector_id=sector.id
                     )
                     db_session.add(relation)
                     result['added'] += 1
@@ -558,7 +552,6 @@ class MetadataService:
                     sector_code=f"{sector_type[:3]}_{sector_name[:18]}",
                     sector_name=sector_name,
                     sector_type=sector_type,
-                    level=1,
                     stock_count=0,
                 )
                 db_session.add(sector)
@@ -786,7 +779,6 @@ class MetadataService:
                             sector_code=f"{sector_type[:3]}_{sector_name[:18]}",
                             sector_name=sector_name,
                             sector_type=sector_type,
-                            level=1,
                         )
                         db_session.add(sector)
                         db_session.flush()
@@ -800,14 +792,9 @@ class MetadataService:
             
             # 4. 添加新的关联
             for sector_type, sector_id in sector_ids.items():
-                is_main = 1 if sector_type == 'industry' else 0
-                weight = 100.00 if sector_type == 'industry' else 50.00
-                
                 relation = StockSectorRelation(
                     stock_code=stock_code,
-                    sector_id=sector_id,
-                    is_main=is_main,
-                    weight=weight
+                    sector_id=sector_id
                 )
                 db_session.add(relation)
             
@@ -877,26 +864,26 @@ class MetadataService:
     
     def supplement_industry_sectors_from_akshare(self, db_session=None):
         """
-        使用AKShare补充行业板块和成分股
-        
+        使用AKShare补充行业板块和成分股（支持断点续传）
+
         Args:
             db_session: 数据库会话
-            
+
         Returns:
             dict: {'sectors': 板块结果, 'relations': 关联结果}
         """
         if db_session is None:
             db_session = db.session
-        
+
         sector_result = {'added': 0, 'updated': 0, 'skipped': 0}
         relation_result = {'added': 0, 'updated': 0, 'skipped': 0}
-        
+
         try:
             aks = self._get_eastmoney_service()
             if not aks:
                 logger.warning("AKShare 服务不可用")
                 return {'sectors': sector_result, 'relations': relation_result}
-            
+
             logger.info("开始通过东方财富补充行业板块...")
 
             # 1. 获取所有行业分类
@@ -908,73 +895,116 @@ class MetadataService:
 
             logger.info(f"获取到 {len(industry_list)} 个行业分类")
 
-            # 2. 获取所有行业成分股
-            all_stocks = aks.get_industry_stocks()
+            # 2. 获取已存在的行业板块列表（用于断点续传）
+            existing_sectors = db_session.query(StockSector.sector_name, StockSector.id).filter(
+                StockSector.sector_type == 'industry'
+            ).all()
+            existing_sector_names = {s.sector_name: s.id for s in existing_sectors}
+            logger.info(f"数据库已存在 {len(existing_sector_names)} 个行业板块")
 
-            if not all_stocks:
-                logger.warning("未获取到行业成分股数据")
-                return {'sectors': sector_result, 'relations': relation_result}
+            # 3. 统计已有关联关系的板块数量
+            sectors_with_relations = db_session.query(StockSectorRelation.sector_id).distinct().count()
+            logger.info(f"已有成分股关联的板块数量: {sectors_with_relations}")
 
-            # 3. 按行业名称分组
-            industry_stocks = defaultdict(list)
-            for stock in all_stocks:
-                industry_name = stock.get('industry', '')
-                if industry_name and industry_name != '未知':
+            # 4. 筛选出需要处理的板块（不在数据库中 或 没有成分股关联）
+            sectors_to_process = []
+            for item in industry_list:
+                industry_name = item.get('industry', '')
+                if not industry_name or industry_name == '未知':
+                    continue
+
+                if industry_name not in existing_sector_names:
+                    # 新板块，需要处理
+                    sectors_to_process.append(item)
+                else:
+                    # 已存在的板块，检查是否有成分股关联
+                    sector_id = existing_sector_names[industry_name]
+                    has_relation = db_session.query(StockSectorRelation).filter(
+                        StockSectorRelation.sector_id == sector_id
+                    ).first()
+                    if not has_relation:
+                        # 没有成分股关联，需要处理
+                        sectors_to_process.append(item)
+
+            logger.info(f"需要处理的行业板块数量: {len(sectors_to_process)} (总计 {len(industry_list)} 个)")
+
+            # 5. 遍历需要处理的行业
+            for i, item in enumerate(sectors_to_process):
+                industry_name = item.get('industry', '')
+
+                if not industry_name or industry_name == '未知':
+                    continue
+
+                logger.info(f"[{i+1}/{len(sectors_to_process)}] 获取行业 {industry_name} 的成分股...")
+
+                # 获取该行业的成分股
+                stocks = aks.get_industry_stocks(industry_name)
+                stock_codes = []
+                for stock in stocks:
                     code = self._convert_code_to_baostock_format(stock.get('code', ''))
                     if code:
-                        industry_stocks[industry_name].append(code)
+                        stock_codes.append(code)
 
-            logger.info(f"成分股分组完成: 共 {len(industry_stocks)} 个行业有成分股")
-
-            # 4. 创建板块并添加关联
-            for industry_name, stock_codes in industry_stocks.items():
                 stock_codes = list(set(stock_codes))  # 去重
-
-                # 检查板块是否存在
-                sector = db_session.query(StockSector).filter(
-                    StockSector.sector_name == industry_name,
-                    StockSector.sector_type == 'industry'
-                ).first()
-
-                if sector:
-                    # 更新
-                    sector.stock_count = len(stock_codes)
-                    sector.update_time = datetime.now()
-                    sector_result['updated'] += 1
-                else:
-                    # 新增
-                    sector = StockSector(
-                        sector_code=f"ind_{industry_name[:18]}",
-                        sector_name=industry_name,
-                        sector_type='industry',
-                        level=1,
-                        stock_count=len(stock_codes),
-                    )
-                    db_session.add(sector)
-                    db_session.flush()  # 获取 sector.id
-                    sector_result['added'] += 1
-
-                # 添加股票-板块关联
-                for stock_code in stock_codes:
-                    exists = db_session.query(StockSectorRelation).filter(
-                        StockSectorRelation.stock_code == stock_code,
-                        StockSectorRelation.sector_id == sector.id
+                logger.info(f"获取到 {len(stock_codes)} 只成分股，立即落库...")
+                
+                # 立即创建板块并添加关联
+                try:
+                    # 检查板块是否存在
+                    sector = db_session.query(StockSector).filter(
+                        StockSector.sector_name == industry_name,
+                        StockSector.sector_type == 'industry'
                     ).first()
 
-                    if not exists:
-                        relation = StockSectorRelation(
-                            stock_code=stock_code,
-                            sector_id=sector.id,
-                            is_main=1,
-                            weight=100.00
-                        )
-                        db_session.add(relation)
-                        relation_result['added'] += 1
+                    if sector:
+                        # 更新
+                        sector.stock_count = len(stock_codes)
+                        sector.update_time = datetime.now()
+                        db_session.add(sector)
+                        sector_result['updated'] += 1
                     else:
-                        relation_result['skipped'] += 1
-            
-            db_session.commit()
-            logger.info(f"行业板块补充完成: 新增{sector_result['added']}个板块, 新增{relation_result['added']}条关联")
+                        # 新增
+                        sector = StockSector(
+                            sector_code=f"ind_{industry_name[:18]}",
+                            sector_name=industry_name,
+                            sector_type='industry',
+                            stock_count=len(stock_codes),
+                        )
+                        db_session.add(sector)
+                        db_session.flush()  # 获取 sector.id
+                        sector_result['added'] += 1
+
+                    # 添加股票-板块关联
+                    for scode in stock_codes:
+                        exists = db_session.query(StockSectorRelation).filter(
+                            StockSectorRelation.stock_code == scode,
+                            StockSectorRelation.sector_id == sector.id
+                        ).first()
+
+                        if not exists:
+                            relation = StockSectorRelation(
+                                stock_code=scode,
+                                sector_id=sector.id
+                            )
+                            db_session.add(relation)
+                            relation_result['added'] += 1
+                        else:
+                            relation_result['skipped'] += 1
+                    
+                    # 每获取一个板块就提交
+                    db_session.commit()
+                    logger.info(f"✅ 行业 {industry_name} 落库完成: {len(stock_codes)} 只成分股")
+                    
+                except Exception as sector_error:
+                    db_session.rollback()
+                    logger.error(f"❌ 行业 {industry_name} 落库失败: {sector_error}")
+                    sector_result['skipped'] += 1
+                
+                # 添加延时，避免请求过快
+                import time
+                time.sleep(1)
+
+            logger.info(f"✅ 行业板块补充完成: 处理{sector_result['added'] + sector_result['updated']}个板块, 新增{relation_result['added']}条关联, 跳过{sector_result['skipped']}个")
             
         except Exception as e:
             db_session.rollback()
@@ -984,7 +1014,7 @@ class MetadataService:
     
     def supplement_concept_sectors_from_akshare(self, db_session=None):
         """
-        使用AKShare补充概念板块和成分股
+        使用AKShare补充概念板块和成分股（支持断点续传）
         
         Args:
             db_session: 数据库会话
@@ -1018,17 +1048,47 @@ class MetadataService:
 
             logger.info(f"获取到 {len(concept_list)} 个概念板块")
 
-            # 2. 遍历每个概念，获取成分股
+            # 2. 获取已存在的板块列表（用于断点续传）
+            existing_sectors = db_session.query(StockSector.sector_name, StockSector.id).filter(
+                StockSector.sector_type == 'concept'
+            ).all()
+            existing_sector_names = {s.sector_name: s.id for s in existing_sectors}
+            logger.info(f"数据库已存在 {len(existing_sector_names)} 个概念板块")
+
+            # 3. 统计已有关联关系的板块数量
+            sectors_with_relations = db_session.query(StockSectorRelation.sector_id).distinct().count()
+            logger.info(f"已有成分股关联的板块数量: {sectors_with_relations}")
+
+            # 4. 遍历每个概念，获取成分股
             http = aks.http  # 使用服务类的 HTTP 实例
 
-            for i, concept in enumerate(concept_list):
-                concept_name = concept.get('concept_name', '')
+            # 筛选出还没有成分股的板块
+            sectors_to_process = []
+            for concept in concept_list:
+                concept_name = concept.get('concept', '')  # 修复：使用 'concept' 而不是 'concept_name'
+                if concept_name and concept_name not in existing_sector_names:
+                    sectors_to_process.append(concept)
+
+            # 已存在但没有成分股的板块也加入处理
+            for sector_name, sector_id in existing_sector_names.items():
+                has_relation = db_session.query(StockSectorRelation).filter(
+                    StockSectorRelation.sector_id == sector_id
+                ).first()
+                if not has_relation:
+                    concept = next((c for c in concept_list if c.get('concept') == sector_name), None)  # 修复：使用 'concept'
+                    if concept:
+                        sectors_to_process.append(concept)
+            
+            logger.info(f"需要处理的板块数量: {len(sectors_to_process)} (总计 {len(concept_list)} 个)")
+
+            for i, concept in enumerate(sectors_to_process):
+                concept_name = concept.get('concept', '')  # 修复：使用 'concept' 而不是 'concept_name'
                 concept_code = concept.get('code', '')
 
                 if not concept_name:
                     continue
 
-                logger.info(f"[{i+1}/{len(concept_list)}] 获取概念 {concept_name} 的成分股...")
+                logger.info(f"[{i+1}/{len(sectors_to_process)}] 获取概念 {concept_name} 的成分股...")
 
                 try:
                     # 直接调用 API 获取概念成分股
@@ -1039,7 +1099,6 @@ class MetadataService:
 
                     if data and data.get('data', {}).get('diff'):
                         diff = data['data']['diff']
-                        # 过滤属于该概念的股票（东方财富返回的数据不包含概念代码，需要全部保存）
                         stocks = []
                         for item in diff:
                             code = str(item.get('f12', ''))
@@ -1049,7 +1108,7 @@ class MetadataService:
                                     'name': str(item.get('f14', '')),
                                 })
                         stock_codes = [self._convert_code_to_baostock_format(s['code']) for s in stocks if s.get('code')]
-                        logger.info(f"  概念 {concept_name} 包含 {len(stock_codes)} 只成分股")
+                        logger.info(f"  概念 {concept_name} 包含 {len(stock_codes)} 只成分股，立即落库...")
                     else:
                         stock_codes = []
 
@@ -1057,53 +1116,61 @@ class MetadataService:
                     logger.warning(f"  获取概念 {concept_name} 成分股失败: {e}")
                     stock_codes = []
 
-                # 检查板块是否存在
-                sector = db_session.query(StockSector).filter(
-                    StockSector.sector_name == concept_name,
-                    StockSector.sector_type == 'concept'
-                ).first()
-
-                if sector:
-                    # 更新
-                    sector.stock_count = len(stock_codes)
-                    sector.update_time = datetime.now()
-                    sector_result['updated'] += 1
-                else:
-                    # 新增
-                    sector = StockSector(
-                        sector_code=f"con_{concept_code[:10] if concept_code else concept_name[:18]}",
-                        sector_name=concept_name,
-                        sector_type='concept',
-                        level=1,
-                        stock_count=len(stock_codes),
-                    )
-                    db_session.add(sector)
-                    db_session.flush()  # 获取 sector.id
-                    sector_result['added'] += 1
-
-                # 添加股票-板块关联
-                for stock_code in stock_codes:
-                    if not stock_code:
-                        continue
-                    exists = db_session.query(StockSectorRelation).filter(
-                        StockSectorRelation.stock_code == stock_code,
-                        StockSectorRelation.sector_id == sector.id
-                    ).first()
-
-                    if not exists:
-                        relation = StockSectorRelation(
-                            stock_code=stock_code,
-                            sector_id=sector.id,
-                            is_main=0,
-                            weight=50.00
-                        )
-                        db_session.add(relation)
-                        relation_result['added'] += 1
+                # 立即创建板块并添加关联
+                try:
+                    # 检查板块是否存在（从已存在的数据中查找）
+                    sector = None
+                    if concept_name in existing_sector_names:
+                        sector = db_session.query(StockSector).get(existing_sector_names[concept_name])
+                    
+                    if sector:
+                        # 更新
+                        sector.stock_count = len(stock_codes)
+                        sector.update_time = datetime.now()
+                        db_session.add(sector)
+                        sector_result['updated'] += 1
                     else:
-                        relation_result['skipped'] += 1
+                        # 新增
+                        sector = StockSector(
+                            sector_code=f"con_{concept_code[:10] if concept_code else concept_name[:18]}",
+                            sector_name=concept_name,
+                            sector_type='concept',
+                            stock_count=len(stock_codes),
+                        )
+                        db_session.add(sector)
+                        db_session.flush()  # 获取 sector.id
+                        sector_result['added'] += 1
+                        existing_sector_names[concept_name] = sector.id
+
+                    # 添加股票-板块关联
+                    for scode in stock_codes:
+                        if not scode:
+                            continue
+                        exists = db_session.query(StockSectorRelation).filter(
+                            StockSectorRelation.stock_code == scode,
+                            StockSectorRelation.sector_id == sector.id
+                        ).first()
+
+                        if not exists:
+                            relation = StockSectorRelation(
+                                stock_code=scode,
+                                sector_id=sector.id
+                            )
+                            db_session.add(relation)
+                            relation_result['added'] += 1
+                        else:
+                            relation_result['skipped'] += 1
+                    
+                    # 每获取一个概念就提交
+                    db_session.commit()
+                    logger.info(f"✅ 概念 {concept_name} 落库完成: {len(stock_codes)} 只成分股")
+                    
+                except Exception as sector_error:
+                    db_session.rollback()
+                    logger.error(f"❌ 概念 {concept_name} 落库失败: {sector_error}")
+                    sector_result['skipped'] += 1
             
-            db_session.commit()
-            logger.info(f"概念板块补充完成: 新增{sector_result['added']}个板块, 新增{relation_result['added']}条关联")
+            logger.info(f"✅ 全部概念板块补充完成: 新增{sector_result['added']}个板块, 更新{sector_result['updated']}个板块, 新增{relation_result['added']}条关联")
             
         except Exception as e:
             db_session.rollback()
@@ -1154,6 +1221,217 @@ class MetadataService:
 def get_metadata_service():
     """获取元数据服务实例"""
     return MetadataService()
+
+
+# ==================== 通用断点续传引擎 ====================
+
+def create_progress_tasks(db_session, task_type, targets):
+    """
+    创建批量任务（通用方法）
+
+    Args:
+        db_session: 数据库会话
+        task_type: 任务类型 (如 'stock_basic', 'stock_daily_kline', etc.)
+        targets: 目标列表 (如股票代码列表、行业名称列表等)
+    """
+    existing = db_session.query(MetadataProgress).filter(
+        MetadataProgress.task_type == task_type,
+        MetadataProgress.status == 'completed'
+    ).count()
+
+    if existing > 0:
+        logger.info(f"[{task_type}] 发现已完成的任务，跳过初始化（使用断点续传模式）")
+        return
+
+    # 清除旧的pending任务并创建新的
+    db_session.query(MetadataProgress).filter(
+        MetadataProgress.task_type == task_type
+    ).delete()
+
+    for target in targets:
+        task = MetadataProgress(
+            task_type=task_type,
+            target_name=target if target else '-',
+            status='pending',
+            retry_count=0,
+            max_retries=3
+        )
+        db_session.add(task)
+
+    db_session.commit()
+    logger.info(f"[{task_type}] 已初始化 {len(targets)} 个待处理任务")
+
+
+def get_pending_task(db_session, task_type):
+    """获取一个待处理的任务"""
+    task = db_session.query(MetadataProgress).filter(
+        MetadataProgress.task_type == task_type,
+        MetadataProgress.status == 'pending'
+    ).first()
+
+    if task:
+        task.status = 'processing'
+        task.started_at = datetime.now()
+        task.retry_count += 1
+        db_session.commit()
+
+    return task
+
+
+def complete_task(db_session, task_type, target_name):
+    """标记任务为完成"""
+    db_session.query(MetadataProgress).filter(
+        MetadataProgress.task_type == task_type,
+        MetadataProgress.target_name == target_name
+    ).update({
+        'status': 'completed',
+        'completed_at': datetime.now(),
+        'error_message': None
+    })
+    db_session.commit()
+
+
+def fail_task(db_session, task_type, target_name, error_msg):
+    """标记任务失败（如果未达最大重试次数则重试，否则标记为失败）"""
+    task = db_session.query(MetadataProgress).filter(
+        MetadataProgress.task_type == task_type,
+        MetadataProgress.target_name == target_name
+    ).first()
+
+    if task and task.retry_count < task.max_retries:
+        task.status = 'pending'  # 放回队列重试
+        task.error_message = f"[{task.retry_count}/{task.max_retries}] {error_msg}"
+        db_session.commit()
+        logger.warning(f"[{task_type}] {target_name} 失败，准备第{task.retry_count}次重试")
+    elif task:
+        task.status = 'failed'
+        task.error_message = f"[已放弃] {error_msg}"
+        db_session.commit()
+        logger.error(f"[{task_type}] {target_name} 已达到最大重试次数，标记为失败")
+
+
+def get_progress_stats(db_session, task_type):
+    """获取任务进度统计"""
+    stats = db_session.query(
+        MetadataProgress.status,
+        db.func.count(MetadataProgress.id)
+    ).filter(
+        MetadataProgress.task_type == task_type
+    ).group_by(MetadataProgress.status).all()
+
+    result = {'pending': 0, 'processing': 0, 'completed': 0, 'failed': 0}
+    for status, count in stats:
+        result[status] = count
+
+    total = sum(result.values())
+    if total > 0:
+        result['percent'] = round(result['completed'] / total * 100, 2)
+    else:
+        result['percent'] = 0
+
+    return result
+
+
+# ==================== 断点续传版：股票基本信息初始化 ====================
+
+def supplement_stock_basic_from_akshare_v2(db_session=None, update_existing=True):
+    """
+    使用AKShare补充股票基本信息 - 断点续传版
+
+    特点：
+    - 支持中断后继续
+    - 失败自动重试（最多3次）
+    - 每只股票独立落库
+    """
+    if db_session is None:
+        db_session = db.session
+
+    result = {'added': 0, 'updated': 0, 'skipped': 0}
+
+    try:
+        from services.akshare_service import get_eastmoney_service
+        aks = get_eastmoney_service()
+
+        # 1. 获取所有股票
+        stock_list = aks.get_stock_basics()
+        if not stock_list:
+            logger.warning("未获取到股票列表数据")
+            return result
+
+        logger.info(f"获取到 {len(stock_list)} 只股票")
+
+        # 2. 创建任务队列
+        create_progress_tasks(db_session, 'stock_basic', [s.get('code', '') for s in stock_list if s.get('code')])
+
+        # 3. 获取已有的股票
+        existing_codes = {s[0] for s in db_session.query(StockBasic.stock_code).all()}
+        logger.info(f"数据库已有 {len(existing_codes)} 只股票")
+
+        # 4. 逐个处理
+        processed = 0
+        while True:
+            task = get_pending_task(db_session, 'stock_basic')
+            if not task:
+                break
+
+            code = task.target_name
+
+            try:
+                # 查找股票信息
+                stock_info = None
+                for s in stock_list:
+                    if s.get('code') == code:
+                        stock_info = s
+                        break
+
+                if not stock_info:
+                    complete_task(db_session, 'stock_basic', code)
+                    continue
+
+                if code in existing_codes:
+                    # 已存在
+                    if update_existing:
+                        stock_obj = db_session.query(StockBasic).filter(
+                            StockBasic.stock_code == code
+                        ).first()
+                        if stock_obj:
+                            stock_obj.stock_name = stock_info.get('name', '') or stock_obj.stock_name
+                            stock_obj.market = stock_info.get('market', '') or stock_obj.market
+                            stock_obj.update_time = datetime.now()
+                            result['updated'] += 1
+                    else:
+                        result['skipped'] += 1
+                else:
+                    # 新增
+                    new_stock = StockBasic(
+                        stock_code=code,
+                        stock_name=stock_info.get('name', ''),
+                        exchange=stock_info.get('exchange', ''),
+                        market=stock_info.get('market', ''),
+                    )
+                    db_session.add(new_stock)
+                    result['added'] += 1
+
+                db_session.commit()
+                complete_task(db_session, 'stock_basic', code)
+                logger.info(f"[{processed+1}/{len(stock_list)}] ✅ {code} {stock_info.get('name', '')}")
+
+            except Exception as e:
+                db_session.rollback()
+                fail_task(db_session, 'stock_basic', code, str(e))
+                logger.error(f"❌ {code} 处理失败: {e}")
+
+            processed += 1
+
+        # 5. 输出统计
+        stats = get_progress_stats(db_session, 'stock_basic')
+        logger.info(f"🎯 股票初始化完成: 新增{result['added']}, 更新{result['updated']}, 跳过{result['skipped']}")
+        logger.info(f"📊 进度: {stats['completed']}/{stats['completed']+stats['pending']+stats['failed']} ({stats.get('percent', 0)}%)")
+
+    except Exception as e:
+        logger.error(f"股票初始化异常: {e}")
+
+    return result
 
 
 # ==================== 股票元数据初始化 ====================

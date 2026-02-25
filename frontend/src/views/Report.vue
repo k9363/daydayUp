@@ -1,52 +1,18 @@
 <template>
   <div class="report">
-    <el-container>
-      <el-header class="header">
-        <div class="header-content">
-          <div class="logo" @click="$router.push('/')">
-            <el-icon :size="28" color="#409EFF"><DataAnalysis /></el-icon>
-            <span class="title">DaydayUp</span>
-          </div>
-          <el-menu
-            :default-active="activeMenu"
-            mode="horizontal"
-            :router="true"
-            class="nav-menu"
-          >
-            <el-menu-item index="/">
-              <el-icon><HomeFilled /></el-icon>
-              <span>首页</span>
-            </el-menu-item>
-            <el-menu-item index="/metadata">
-              <el-icon><Grid /></el-icon>
-              <span>元数据</span>
-            </el-menu-item>
-            <el-menu-item index="/datasource">
-              <el-icon><Document /></el-icon>
-              <span>数据管理</span>
-            </el-menu-item>
-            <el-menu-item index="/review">
-              <el-icon><TrendCharts /></el-icon>
-              <span>复盘分析</span>
-            </el-menu-item>
-          </el-menu>
-        </div>
-      </el-header>
-      
-      <el-main>
-        <div class="page-header">
-          <el-page-header @back="$router.back()">
-            <template #content>
-              <span class="page-title">分析报告</span>
-            </template>
-            <template #extra>
-              <el-button @click="exportReport">
-                <el-icon><Download /></el-icon>
-                导出报告
-              </el-button>
-            </template>
-          </el-page-header>
-        </div>
+    <div class="page-header">
+      <el-page-header @back="$router.back()">
+        <template #content>
+          <span class="page-title">分析报告</span>
+        </template>
+        <template #extra>
+          <el-button @click="exportReport">
+            <el-icon><Download /></el-icon>
+            导出报告
+          </el-button>
+        </template>
+      </el-page-header>
+    </div>
         
         <!-- 加载状态 -->
         <div v-if="loading" class="loading-container">
@@ -326,8 +292,6 @@
         <el-empty v-else-if="!loading && !reportData" description="报告数据不存在">
           <el-button type="primary" @click="$router.push('/review')">返回列表</el-button>
         </el-empty>
-      </el-main>
-    </el-container>
   </div>
 </template>
 
@@ -373,8 +337,6 @@ const top100Detail = computed(() => {
   if (!chartData.value?.top100Detail) return []
   return chartData.value.top100Detail
 })
-
-const activeMenu = computed(() => '/review')
 
 const getTypeName = (type) => {
   const types = { daily: '日复盘', weekly: '周复盘', monthly: '月复盘', custom: '自定义' }

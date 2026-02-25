@@ -7,6 +7,7 @@ from routes.review import review_bp
 from routes.stock import stock_bp
 from routes.sync import sync_bp
 from routes.metadata import metadata_bp
+from routes.scheduler import scheduler_bp
 
 
 def create_app(config_name=None):
@@ -29,6 +30,7 @@ def create_app(config_name=None):
     app.register_blueprint(stock_bp, url_prefix='/api/stock')
     app.register_blueprint(sync_bp, url_prefix='/api/sync')
     app.register_blueprint(metadata_bp, url_prefix='/api/metadata')
+    app.register_blueprint(scheduler_bp, url_prefix='/api/scheduler')
     
     # 根路径健康检查
     @app.route('/api/health')
@@ -51,6 +53,38 @@ def create_app(config_name=None):
     return app
 
 
+# 全局调度器（应用启动时初始化）
+_scheduler_service = None
+
+
+def init_scheduler(app):
+    """初始化定时任务调度器"""
+    global _scheduler_service
+    try:
+        from services.scheduler_service import scheduler_service as ss
+        _scheduler_service = ss
+        _scheduler_service.start()
+        app.logger.info("✅ 定时任务调度器已初始化")
+    except Exception as e:
+        app.logger.warning(f"⚠️ 定时任务调度器初始化失败: {e}")
+
+
+def stop_scheduler():
+    """停止定时任务调度器"""
+    global _scheduler_service
+    if _scheduler_service:
+        _scheduler_service.stop()
+
+
+def get_scheduler_service():
+    """获取调度器服务实例"""
+    return _scheduler_service
+
+
 if __name__ == '__main__':
     app = create_app('development')
+    
+    # 初始化定时任务调度器
+    init_scheduler(app)
+    
     app.run(host='0.0.0.0', port=5001, debug=True)

@@ -100,19 +100,16 @@ CREATE TABLE IF NOT EXISTS `stock_basic` (
 DROP TABLE IF EXISTS `stock_sector`;
 CREATE TABLE IF NOT EXISTS `stock_sector` (
     `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
-    `sector_code` VARCHAR(20) NOT NULL COMMENT '板块代码',
+    `sector_code` VARCHAR(50) NOT NULL COMMENT '板块代码',
     `sector_name` VARCHAR(100) NOT NULL COMMENT '板块名称',
     `sector_type` VARCHAR(20) NOT NULL COMMENT '板块类型: industry-行业, concept-概念, area-地区',
-    `parent_code` VARCHAR(20) COMMENT '父板块代码',
-    `level` INT DEFAULT 1 COMMENT '板块层级',
     `description` VARCHAR(500) COMMENT '板块描述',
     `stock_count` INT DEFAULT 0 COMMENT '包含股票数量',
     `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
     UNIQUE INDEX `idx_sector_code` (`sector_code`),
-    INDEX `idx_sector_type` (`sector_type`),
-    INDEX `idx_parent_code` (`parent_code`)
+    INDEX `idx_sector_type` (`sector_type`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='股票板块表';
 
 -- ============================================================================
@@ -123,8 +120,6 @@ CREATE TABLE IF NOT EXISTS `stock_sector_relation` (
     `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
     `stock_code` VARCHAR(20) NOT NULL COMMENT '股票代码',
     `sector_id` BIGINT NOT NULL COMMENT '板块ID',
-    `is_main` INT DEFAULT 0 COMMENT '是否主板块: 0-否, 1-是',
-    `weight` NUMERIC(5, 2) DEFAULT 100.00 COMMENT '权重百分比',
     `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     PRIMARY KEY (`id`),
     UNIQUE INDEX `uq_stock_sector` (`stock_code`, `sector_id`),
@@ -298,6 +293,41 @@ CREATE TABLE IF NOT EXISTS `data_sync_task` (
     INDEX `idx_sync_status` (`status`),
     INDEX `idx_sync_dates` (`start_date`, `end_date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据同步任务表';
+
+-- ============================================================================
+-- 12. 股票交割单表 (stock_delivery)
+-- ============================================================================
+DROP TABLE IF EXISTS `stock_delivery`;
+CREATE TABLE `stock_delivery` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+    `trade_date` VARCHAR(10) NOT NULL COMMENT '成交日期 YYYYMMDD',
+    `trade_time` VARCHAR(8) COMMENT '成交时间 HH:MM:SS',
+    `security_code` VARCHAR(20) NOT NULL COMMENT '证券代码',
+    `security_name` VARCHAR(50) COMMENT '证券名称',
+    `operation` VARCHAR(20) COMMENT '操作: 买入/卖出/配股等',
+    `quantity` INT COMMENT '成交数量',
+    `deal_no` VARCHAR(50) COMMENT '成交编号',
+    `price` DECIMAL(16,3) COMMENT '成交价格',
+    `amount` DECIMAL(16,2) COMMENT '成交金额',
+    `balance` DECIMAL(16,2) COMMENT '余额',
+    `stock_balance` INT COMMENT '股票余额',
+    `occur_amount` DECIMAL(16,2) COMMENT '发生金额',
+    `commission` DECIMAL(16,3) COMMENT '佣金',
+    `stamp_duty` DECIMAL(16,3) COMMENT '印花税',
+    `other_fee` DECIMAL(16,3) COMMENT '其他杂费',
+    `transfer_fee` DECIMAL(16,3) COMMENT '过户费',
+    `other_expense` DECIMAL(16,3) COMMENT '其他费',
+    `fund_balance` DECIMAL(16,2) COMMENT '资金余额',
+    `current_amount` DECIMAL(16,2) COMMENT '本次金额',
+    `contract_no` VARCHAR(20) COMMENT '合同编号',
+    `market` VARCHAR(20) COMMENT '交易市场',
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_deal_no` (`deal_no`),
+    INDEX `idx_trade_date` (`trade_date`),
+    INDEX `idx_security_code` (`security_code`),
+    INDEX `idx_operation` (`operation`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='股票交割单表';
 
 -- ============================================================================
 -- 初始化完成

@@ -15,6 +15,7 @@ from models.kline import (
     StockMinuteKLine,
     DataSyncTask
 )
+from models.delivery import StockDelivery
 
 
 def init_db(app):

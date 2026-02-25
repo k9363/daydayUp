@@ -65,18 +65,58 @@ stop_all() {
     echo "=================================="
     echo "  停止服务"
     echo "=================================="
-    
-    # 停止后端服务
-    stop_service "后端服务 (Flask)" "python.*app.py"
-    stop_service "后端服务 (Flask)" "flask.*app.py"
-    
-    # 停止前端服务
-    stop_service "前端服务 (Vite)" "vite"
-    stop_service "前端服务 (Node)" "npm.*dev"
-    
-    # 查找可能遗漏的进程
-    stop_service "其他相关进程" "daydayup"
-    
+
+    # 1. 查找并杀死所有相关 Python 进程
+    echo "    查找 Python 进程..."
+    PYTHON_PIDS=$(ps aux | grep -E "python.*app.py|python.*daydayUp" | grep -v grep | awk '{print $2}')
+    if [ -n "$PYTHON_PIDS" ]; then
+        echo "    终止 Python 进程: $PYTHON_PIDS"
+        kill -9 $PYTHON_PIDS 2>/dev/null
+    else
+        print_warning "Python 进程未运行"
+    fi
+
+    # 2. 查找并杀死所有相关 Node 进程
+    echo "    查找 Node 进程..."
+    NODE_PIDS=$(ps aux | grep -E "node.*dev|vite" | grep -v grep | awk '{print $2}')
+    if [ -n "$NODE_PIDS" ]; then
+        echo "    终止 Node 进程: $NODE_PIDS"
+        kill -9 $NODE_PIDS 2>/dev/null
+    else
+        print_warning "Node 进程未运行"
+    fi
+
+    # 3. 检查端口 5001
+    echo "    检查端口 5001..."
+    PORT_5001_PID=$(lsof -ti :5001 2>/dev/null)
+    if [ -n "$PORT_5001_PID" ]; then
+        echo "    终止占用 5001 端口的进程: $PORT_5001_PID"
+        kill -9 $PORT_5001_PID 2>/dev/null
+        sleep 1
+    fi
+
+    # 再次检查确保端口释放
+    FINAL_5001=$(lsof -ti :5001 2>/dev/null)
+    if [ -n "$FINAL_5001" ]; then
+        print_warning "端口 5001 仍被占用，强制终止: $FINAL_5001"
+        kill -9 $FINAL_5001 2>/dev/null
+        sleep 1
+    fi
+
+    # 4. 检查端口 5173
+    echo "    检查端口 5173..."
+    PORT_5173_PID=$(lsof -ti :5173 2>/dev/null)
+    if [ -n "$PORT_5173_PID" ]; then
+        echo "    终止占用 5173 端口的进程: $PORT_5173_PID"
+        kill -9 $PORT_5173_PID 2>/dev/null
+        sleep 1
+    fi
+
+    # 5. 清理 PID 文件
+    rm -f "$BACKEND_DIR/.backend_pid" 2>/dev/null
+    rm -f "$FRONTEND_DIR/.frontend_pid" 2>/dev/null
+
+    print_success "所有服务已停止"
     echo ""
 }
 
@@ -101,8 +141,9 @@ start_backend() {
     print_info "检查Python依赖..."
     pip install -r requirements.txt -q 2>/dev/null
     
-    # 启动后端
+    # 启动后端 (关闭 debug 模式避免自动重启导致多进程问题)
     print_info "启动 Flask 服务..."
+    export FLASK_ENV=production
     python app.py &
     BACKEND_PID=$!
     
