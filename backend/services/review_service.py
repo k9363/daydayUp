@@ -99,7 +99,7 @@ class ReviewTaskService:
         try:
             # 读取数据
             file_path = task.file_path
-            data = read_excel(file_path)
+                data = read_excel(file_path)
             
             if not data:
                 raise Exception("数据为空")
@@ -107,9 +107,24 @@ class ReviewTaskService:
             # 执行分析
             results = self._analyze_data(task, data)
             
-            # 保存结果
-            for result in results:
-                db.session.add(result)
+            # 批量保存结果
+            if results:
+                # 使用bulk_insert_mappings批量插入
+                from models.reviewresult import ReviewResult
+                mappings = []
+                for r in results:
+                    mappings.append({
+                        'task_id': r.task_id,
+                        'dimension': r.dimension,
+                        'metric_name': r.metric_name,
+                        'metric_value': r.metric_value,
+                        'compare_value': r.compare_value,
+                        'change_rate': r.change_rate,
+                        'status': r.status,
+                        'suggestion': r.suggestion,
+                        'detail_data': r.detail_data
+                    })
+                db.session.bulk_insert_mappings(ReviewResult, mappings)
             
             # 更新任务状态
             task.status = 'completed'
@@ -293,6 +308,8 @@ class ReviewTaskService:
         
         if not data:
             return results
+        
+        from models.reviewresult import ReviewResult
         
         # 数据总量
         total_result = ReviewResult()
@@ -899,10 +916,11 @@ class ReviewTaskService:
         """
         计算因子得分
 
-        因子1（成交额权重）：当日成交额第一为10，每少一名减0.2
-        因子2（短线趋势）：股价在5日线上加5分，否则减2分；在10日线上加3分，否则减1分
-        因子3（昨日同比）：成交量大于等于上个交易日加3分，否则减1分
-        因子4（极限量）：近5日平均成交额 / 前6-20日平均成交额 * 10
+        因子1（成交额权重）：当日成交额第一为10，每少一名减0.2，最低为0
+        因子2（短线趋势）：股价在5日线上+3否则-1，在10日线上+2否则-0.5
+        因子3（昨日同比）：成交量大于等于上个交易日+3，否则-1
+        因子4（爆量）：近3日平均成交额 / 前5-20日平均成交额 * 3
+        因子5（极限量）：近10日平均成交额 / 前11-30日平均成交额 * 5
 
         Args:
             stock_codes: 股票代码列表
@@ -916,20 +934,28 @@ class ReviewTaskService:
         from datetime import datetime, timedelta
         from models.kline import StockDailyKLine
 
-        # 获取历史交易日
-        trade_date_obj = datetime.strptime(trade_date, '%Y-%m-%d')
-
-        # 计算历史日期范围
-        dates_needed = []
-        # 需要过去30个交易日的数据
-        for i in range(1, 31):
-            check_date = trade_date_obj - timedelta(days=i)
-            dates_needed.append(check_date.strftime('%Y-%m-%d'))
+        # 获取历史交易日 - 需要从数据库查询实际存在的交易日
+        # 首先查询该日期之前实际存在的所有交易日
+        trading_dates = db_session.query(StockDailyKLine.trade_date).filter(
+            StockDailyKLine.stock_code.in_(stock_codes),
+            StockDailyKLine.trade_date <= trade_date
+        ).distinct().order_by(StockDailyKLine.trade_date.desc()).limit(50).all()
+        
+        # 提取日期列表
+        all_dates = [t[0] for t in trading_dates]
+        
+        if len(all_dates) < 30:
+            logger.warning(f"⚠️ 历史交易日不足30天，仅有{len(all_dates)}天，无法计算因子5")
+            return pd.DataFrame()
+        
+        # 取前35个交易日（包括当天）
+        dates_needed = all_dates[:35]
+        logger.info(f"🔍 实际交易日范围: {dates_needed[-1]} ~ {dates_needed[0]} (共{len(dates_needed)}天)")
 
         # 查询历史数据
         historical_data = db_session.query(StockDailyKLine).filter(
             StockDailyKLine.stock_code.in_(stock_codes),
-            StockDailyKLine.trade_date.in_(dates_needed + [trade_date])  # 包含当天数据
+            StockDailyKLine.trade_date.in_(dates_needed)
         ).order_by(StockDailyKLine.trade_date.desc()).all()
 
         if not historical_data:
@@ -991,9 +1017,9 @@ class ReviewTaskService:
                 ma5_detail = round(ma5, 2)
 
                 if current_price >= ma5:
-                    factor2 += 5
+                    factor2 += 3
                 else:
-                    factor2 -= 2
+                    factor2 -= 1
 
             if len(stock_hist) >= 10:
                 prices_10d = stock_hist.head(10)['close'].values
@@ -1001,9 +1027,9 @@ class ReviewTaskService:
                 ma10_detail = round(ma10, 2)
 
                 if current_price >= ma10:
-                    factor2 += 3
+                    factor2 += 2
                 else:
-                    factor2 -= 1
+                    factor2 -= 0.5
 
             # 因子3：成交量对比 - 记录详细数据
             factor3 = 0
@@ -1019,24 +1045,69 @@ class ReviewTaskService:
                 else:
                     factor3 -= 1
 
-            # 因子4：极限量 - 记录详细数据
+            # 因子4：爆量 - 最近3个交易日的平均成交金额与前20到前4交易日的比值*2
             factor4 = 0
-            avg_5d_detail = None
-            avg_5d_before_detail = None
+            avg_3d_detail = None
+            avg_5_20d_detail = None
             if len(stock_hist) >= 20:
-                # 近5日平均成交额
-                avg_5d = stock_hist.head(5)['turnover'].mean() if len(stock_hist) >= 5 else 0
-                # 前20到前6交易日（即第6-20日）的平均成交额
-                if len(stock_hist) >= 20:
-                    avg_5d_before = stock_hist.iloc[5:20]['turnover'].mean() if len(stock_hist) >= 20 else 0
-                else:
-                    avg_5d_before = 0
+                # 近3日平均成交额
+                avg_3d = stock_hist.head(3)['turnover'].mean() if len(stock_hist) >= 3 else 0
+                # 前20到前4交易日（即第5-20日）的平均成交额
+                avg_5_20d = stock_hist.iloc[4:20]['turnover'].mean() if len(stock_hist) >= 20 else 0
                 
-                avg_5d_detail = round(avg_5d, 2) if avg_5d else None
-                avg_5d_before_detail = round(avg_5d_before, 2) if avg_5d_before else None
+                avg_3d_detail = round(avg_3d, 2) if avg_3d else None
+                avg_5_20d_detail = round(avg_5_20d, 2) if avg_5_20d else None
 
-                if avg_5d_before > 0:
-                    factor4 = (avg_5d / avg_5d_before) * 10
+                if avg_5_20d > 0:
+                    factor4 = (avg_3d / avg_5_20d) * 2
+
+            # 因子5：极限量 - 最近10个交易日的平均成交金额与前30到前11交易日的比值*3
+            factor5 = 0
+            avg_10d_detail = None
+            avg_11_30d_detail = None
+            if len(stock_hist) >= 30:
+                # 近10日平均成交额
+                avg_10d = stock_hist.head(10)['turnover'].mean() if len(stock_hist) >= 10 else 0
+                # 前30到前11交易日（即第11-30日）的平均成交额
+                avg_11_30d = stock_hist.iloc[10:30]['turnover'].mean() if len(stock_hist) >= 30 else 0
+                
+                avg_10d_detail = round(avg_10d, 2) if avg_10d else None
+                avg_11_30d_detail = round(avg_11_30d, 2) if avg_11_30d else None
+
+                if avg_11_30d > 0:
+                    factor5 = (avg_10d / avg_11_30d) * 3
+
+            # 因子6：多头趋势 - 近15个交易日不含今日，每个交易日股价在5日线上+0.2分，在10日线上+0.1分
+            factor6 = 0
+            ma5_15d_detail = None
+            ma10_15d_detail = None
+            # stock_hist是按日期降序的，第0条是今天，第1-15条是近15个交易日（不含今日）
+            if len(stock_hist) >= 16:
+                # 取近15个交易日（不含今日）的历史数据
+                hist_15d = stock_hist.iloc[1:16]  # 跳过今天，取前15个交易日
+                if len(hist_15d) >= 10:
+                    # 遍历每一天计算
+                    for i in range(len(hist_15d)):
+                        # 计算该日的5日均线和10日均线
+                        if i + 5 <= len(hist_15d):
+                            ma5_i = hist_15d.iloc[i:i+5]['close'].mean()
+                            close_i = hist_15d.iloc[i]['close']
+                            # 收盘价在5日线上 +0.2分
+                            if close_i >= ma5_i:
+                                factor6 += 0.2
+                        
+                        if i + 10 <= len(hist_15d):
+                            ma10_i = hist_15d.iloc[i:i+10]['close'].mean()
+                            close_i = hist_15d.iloc[i]['close']
+                            # 收盘价在10日线上 +0.1分
+                            if close_i >= ma10_i:
+                                factor6 += 0.1
+                    
+                    # 记录最近一天的MA5和MA10作为参考
+                    ma5_15d = hist_15d.head(5)['close'].mean()
+                    ma10_15d = hist_15d.head(10)['close'].mean()
+                    ma5_15d_detail = round(ma5_15d, 2) if ma5_15d else None
+                    ma10_15d_detail = round(ma10_15d, 2) if ma10_15d else None
 
             results.append({
                 'stock_code': stock_code,
@@ -1044,8 +1115,10 @@ class ReviewTaskService:
                 'factor1_rank': factor1,  # 成交额排名得分（后续填充）
                 'factor2_ma': factor2,    # 均线得分
                 'factor3_vol': factor3,   # 成交量得分
-                'factor4_amt': factor4,   # 成交额对比得分
-                'total_score': factor2 + factor3 + factor4,  # 暂不包含factor1，后续填充
+                'factor4_burst': factor4,  # 爆量得分
+                'factor5_extreme': factor5,  # 极限量得分
+                'factor6_trend': factor6,  # 多头趋势得分
+                'total_score': factor2 + factor3 + factor4 + factor5 + factor6,  # 暂不包含factor1，后续填充
                 'close': today_close_map.get(stock_code, current_price if len(stock_hist) >= 1 else 0),
                 'volume': today_volume_map.get(stock_code, stock_hist.iloc[0]['volume'] if len(stock_hist) >= 1 else 0),
                 'turnover': today_turnover_map.get(stock_code, stock_hist.iloc[0]['turnover'] if len(stock_hist) >= 1 else 0),
@@ -1055,8 +1128,12 @@ class ReviewTaskService:
                 'ma10': ma10_detail,
                 'vol_current': vol_detail,
                 'vol_prev': prev_vol_detail,
-                'avg_5d_turnover': avg_5d_detail,
-                'avg_5d_before_turnover': avg_5d_before_detail
+                'avg_3d_turnover': avg_3d_detail,
+                'avg_5_20d_turnover': avg_5_20d_detail,
+                'avg_10d_turnover': avg_10d_detail,
+                'avg_11_30d_turnover': avg_11_30d_detail,
+                'ma5_15d': ma5_15d_detail,
+                'ma10_15d': ma10_15d_detail
             })
 
         if not results:
@@ -1065,16 +1142,18 @@ class ReviewTaskService:
         result_df = pd.DataFrame(results)
 
         # 计算因子1：根据成交额排名（成交额权重）
-        # 第一名得10分，每少一名减0.2分
+        # 第一名得10分，每少一名减0.2分，最低为0
         result_df = result_df.sort_values('turnover', ascending=False).reset_index(drop=True)
-        result_df['factor1_rank'] = [10 - x * 0.2 if x < 50 else 0 for x in range(len(result_df))]
+        result_df['factor1_rank'] = [10 - x * 0.2 if (10 - x * 0.2) > 0 else 0 for x in range(len(result_df))]
 
         # 打印调试信息：检查成交额前10的股票
         top10_by_turnover = result_df.head(10)
         logger.info(f"🔍 成交额前10股票: {top10_by_turnover[['stock_code', 'stock_name', 'turnover', 'factor1_rank']].to_dict('records')}")
 
-        # 重新计算总分
-        result_df['total_score'] = result_df['factor1_rank'] + result_df['factor2_ma'] + result_df['factor3_vol'] + result_df['factor4_amt']
+        # 重新计算总分（包含所有6个因子）
+        result_df['total_score'] = (result_df['factor1_rank'] + result_df['factor2_ma'] + 
+                                    result_df['factor3_vol'] + result_df['factor4_burst'] + 
+                                    result_df['factor5_extreme'] + result_df['factor6_trend'])
 
         # 按总分排序（factor1_rank 保持不变，仍然是成交额排名时的得分）
         result_df = result_df.sort_values('total_score', ascending=False).reset_index(drop=True)
@@ -1140,15 +1219,6 @@ class ReviewTaskService:
         except Exception as e:
             logger.warning(f"获取股票元数据失败: {e}")
 
-        # 查询这些股票当日的涨跌幅
-        stock_change_map = {}
-        kline_records = db_session.query(StockDailyKLine.stock_code, StockDailyKLine.change_percent).filter(
-            StockDailyKLine.trade_date == trade_date,
-            StockDailyKLine.stock_code.in_(stock_codes)
-        ).all()
-        for rec in kline_records:
-            stock_change_map[rec.stock_code] = float(rec.change_percent) if rec.change_percent else 0
-
         # 构建板块得分
         sector_scores = {}
         for rank, (_, row) in enumerate(top30_stocks.iterrows(), 1):
@@ -1158,7 +1228,6 @@ class ReviewTaskService:
             if not stock_name or stock_name == '1':
                 stock_name = stock_name_map.get(stock_code, stock_code)
             score = 31 - rank  # 第1名30分，第2名29分，...
-            stock_change = stock_change_map.get(stock_code, 0)  # 该股票当日的涨跌幅
             total_score = row.get('total_score', 0)  # 该股票的总得分
 
             # 查找该股票所属的所有板块
@@ -1171,12 +1240,10 @@ class ReviewTaskService:
                             'sector_name': rel.sector_name,
                             'score': 0,
                             'stock_count': 0,
-                            'total_change': 0,  # 累计涨幅
                             'top_stocks': []  # 前30股票中该板块的股票列表
                         }
                     sector_scores[key]['score'] += score
                     sector_scores[key]['stock_count'] += 1
-                    sector_scores[key]['total_change'] += stock_change
                     # 添加股票信息到列表
                     sector_scores[key]['top_stocks'].append({
                         'code': stock_code,
@@ -1190,12 +1257,10 @@ class ReviewTaskService:
             return pd.DataFrame()
 
         sector_df = pd.DataFrame(list(sector_scores.values()))
-        # 计算平均涨幅
-        sector_df['avg_pct_chg'] = sector_df['total_change'] / sector_df['stock_count']
         sector_df = sector_df.sort_values('score', ascending=False).reset_index(drop=True)
 
         logger.info(f"✅ 板块得分计算完成: {len(sector_df)} 个板块")
-        logger.info(f"前5个板块: {sector_df[['sector_name', 'score', 'stock_count', 'avg_pct_chg']].head().to_dict('records')}")
+        logger.info(f"前5个板块: {sector_df[['sector_name', 'score', 'stock_count', 'top_stocks']].head().to_dict('records')}")
 
         return sector_df
 
@@ -1323,6 +1388,7 @@ class ReviewTaskService:
         
         # 保存指数数据
         if index_list:
+            from models.reviewresult import ReviewResult
             index_result = ReviewResult()
             index_result.task_id = task.id
             index_result.dimension = '指数行情'
@@ -1332,10 +1398,11 @@ class ReviewTaskService:
             index_result.detail_data = json.dumps({
                 'type': 'index_data',
                 'indexes': index_list
-            }, ensure_ascii=False)
+        }, ensure_ascii=False)
             results.append(index_result)
 
         # 2. 成交额前100统计（仅保留详细数据，移除汇总指标）
+        from models.reviewresult import ReviewResult
         top_result = ReviewResult()
         top_result.task_id = task.id
         top_result.dimension = '成交额排名'
@@ -1433,6 +1500,7 @@ class ReviewTaskService:
         results.append(top_result)
 
         # 3. 因子分析结果 - 前10只股票
+        from models.reviewresult import ReviewResult
         top10_result = ReviewResult()
         top10_result.task_id = task.id
         top10_result.dimension = '因子分析'
@@ -1489,8 +1557,10 @@ class ReviewTaskService:
             ma10 = row.get('ma10')
             vol_current = row.get('vol_current')
             vol_prev = row.get('vol_prev')
-            avg_5d_turnover = row.get('avg_5d_turnover')
-            avg_5d_before_turnover = row.get('avg_5d_before_turnover')
+            avg_3d_turnover = row.get('avg_3d_turnover')
+            avg_5_20d_turnover = row.get('avg_5_20d_turnover')
+            avg_10d_turnover = row.get('avg_10d_turnover')
+            avg_11_30d_turnover = row.get('avg_11_30d_turnover')
 
             top10_factors_detail.append({
                 'code': stock_code,
@@ -1503,7 +1573,9 @@ class ReviewTaskService:
                 'factor1Rank': float(row.get('factor1_rank', 0)),
                 'factor2MA': float(row.get('factor2_ma', 0)),
                 'factor3Vol': float(row.get('factor3_vol', 0)),
-                'factor4Amt': float(row.get('factor4_amt', 0)),
+                'factor4Burst': float(row.get('factor4_burst', 0)),
+                'factor5Extreme': float(row.get('factor5_extreme', 0)),
+                'factor6Trend': float(row.get('factor6_trend', 0)),
                 'close': float(row.get('close', 0)),
                 'turnover': float(row.get('turnover', 0)) / 100000000 if pd.notna(row.get('turnover', 0)) else 0,
                 'totalMarketValue': total_mv,
@@ -1514,8 +1586,12 @@ class ReviewTaskService:
                 'ma10': ma10,
                 'volCurrent': vol_current,
                 'volPrev': vol_prev,
-                'avg5dTurnover': avg_5d_turnover,
-                'avg5dBeforeTurnover': avg_5d_before_turnover
+                'avg3dTurnover': avg_3d_turnover,
+                'avg520dTurnover': avg_5_20d_turnover,
+                'avg10dTurnover': avg_10d_turnover,
+                'avg1130dTurnover': avg_11_30d_turnover,
+                'ma5_15d': row.get('ma5_15d'),
+                'ma10_15d': row.get('ma10_15d')
             })
 
         logger.info(f"🔍 保存因子分析数据: 前10只股票factor1Rank={top10_factors_detail[0].get('factor1Rank') if top10_factors_detail else 0}")
@@ -1528,6 +1604,7 @@ class ReviewTaskService:
 
         # 4. 板块得分结果
         if not sector_scores.empty:
+            from models.reviewresult import ReviewResult
             sector_result = ReviewResult()
             sector_result.task_id = task.id
             sector_result.dimension = '板块得分'
@@ -1560,24 +1637,9 @@ class ReviewTaskService:
             # 转换数据格式以匹配前端
             top10_sectors = []
             for _, row in sector_scores.head(10).iterrows():
-                avg_pct = row.get('avg_pct_chg', 0)
                 sector_name = row.get('sector_name', '')
                 # 获取板块代码
                 sector_code = row.get('sector_code', '')
-                
-                # 直接从 factors_df 获取该板块的因子得分
-                sector_stocks_in_top30 = sector_relations_top30.get(sector_code, [])
-                if sector_stocks_in_top30 and len(sector_stocks_in_top30) > 0:
-                    sector_factor_df = factors_df[factors_df['stock_code'].isin(sector_stocks_in_top30)]
-                    if not sector_factor_df.empty:
-                        factor1 = sector_factor_df['factor1_rank'].mean() if 'factor1_rank' in sector_factor_df.columns else 0
-                        factor2 = sector_factor_df['factor2_ma'].mean() if 'factor2_ma' in sector_factor_df.columns else 0
-                        factor3 = sector_factor_df['factor3_vol'].mean() if 'factor3_vol' in sector_factor_df.columns else 0
-                        factor4 = sector_factor_df['factor4_amt'].mean() if 'factor4_amt' in sector_factor_df.columns else 0
-                    else:
-                        factor1 = factor2 = factor3 = factor4 = 0
-                else:
-                    factor1 = factor2 = factor3 = factor4 = 0
                 
                 top10_sectors.append({
                     'sector': sector_name,  # 前端期望 'sector'
@@ -1586,12 +1648,6 @@ class ReviewTaskService:
                     'count': int(row.get('stock_count', 0)),  # 前端期望 'count'
                     'stockCount': int(row.get('stock_count', 0)),
                     'score': float(row.get('score', 0)),
-                    'totalAmount': 0,  # 前端期望，但无数据可填
-                    'avgPctChg': float(avg_pct) if avg_pct else 0,  # 前端期望板块实际涨幅
-                    'factor1': float(factor1) if factor1 else 0,
-                    'factor2': float(factor2) if factor2 else 0,
-                    'factor3': float(factor3) if factor3 else 0,
-                    'factor4': float(factor4) if factor4 else 0,
                     'topStocks': row.get('top_stocks', [])  # 前30股票中该板块的股票列表
                 })
 
@@ -1601,9 +1657,23 @@ class ReviewTaskService:
             }, ensure_ascii=False)
             results.append(sector_result)
 
-        # 保存所有结果
-        for result in results:
-            db.session.add(result)
+        # 批量保存所有结果
+        if results:
+            from models.reviewresult import ReviewResult
+            mappings = []
+            for r in results:
+                mappings.append({
+                    'task_id': r.task_id,
+                    'dimension': r.dimension,
+                    'metric_name': r.metric_name,
+                    'metric_value': r.metric_value,
+                    'compare_value': r.compare_value,
+                    'change_rate': r.change_rate,
+                    'status': r.status,
+                    'suggestion': r.suggestion,
+                    'detail_data': r.detail_data
+                })
+            db.session.bulk_insert_mappings(ReviewResult, mappings)
 
         db.session.commit()
         logger.info(f"✅ 保存了 {len(results)} 条分析结果")

@@ -865,25 +865,25 @@ class MetadataService:
     def supplement_industry_sectors_from_akshare(self, db_session=None):
         """
         使用AKShare补充行业板块和成分股（支持断点续传）
-
+        
         Args:
             db_session: 数据库会话
-
+            
         Returns:
             dict: {'sectors': 板块结果, 'relations': 关联结果}
         """
         if db_session is None:
             db_session = db.session
-
+        
         sector_result = {'added': 0, 'updated': 0, 'skipped': 0}
         relation_result = {'added': 0, 'updated': 0, 'skipped': 0}
-
+        
         try:
             aks = self._get_eastmoney_service()
             if not aks:
                 logger.warning("AKShare 服务不可用")
                 return {'sectors': sector_result, 'relations': relation_result}
-
+            
             logger.info("开始通过东方财富补充行业板块...")
 
             # 1. 获取所有行业分类
@@ -912,7 +912,7 @@ class MetadataService:
                 industry_name = item.get('industry', '')
                 if not industry_name or industry_name == '未知':
                     continue
-
+                
                 if industry_name not in existing_sector_names:
                     # 新板块，需要处理
                     sectors_to_process.append(item)
@@ -936,7 +936,7 @@ class MetadataService:
                     continue
 
                 logger.info(f"[{i+1}/{len(sectors_to_process)}] 获取行业 {industry_name} 的成分股...")
-
+                
                 # 获取该行业的成分股
                 stocks = aks.get_industry_stocks(industry_name)
                 stock_codes = []
@@ -944,7 +944,7 @@ class MetadataService:
                     code = self._convert_code_to_baostock_format(stock.get('code', ''))
                     if code:
                         stock_codes.append(code)
-
+                
                 stock_codes = list(set(stock_codes))  # 去重
                 logger.info(f"获取到 {len(stock_codes)} 只成分股，立即落库...")
                 
@@ -1122,7 +1122,7 @@ class MetadataService:
                     sector = None
                     if concept_name in existing_sector_names:
                         sector = db_session.query(StockSector).get(existing_sector_names[concept_name])
-                    
+
                     if sector:
                         # 更新
                         sector.stock_count = len(stock_codes)

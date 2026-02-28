@@ -1,77 +1,77 @@
 <template>
   <div class="home">
-    <!-- 欢迎区域 -->
-    <div class="welcome-section">
-      <el-card class="welcome-card">
-        <template #header>
-          <div class="card-header">
-            <span>欢迎使用智能复盘系统</span>
-          </div>
-        </template>
-        <div class="welcome-content">
+        <!-- 欢迎区域 -->
+        <div class="welcome-section">
+          <el-card class="welcome-card">
+            <template #header>
+              <div class="card-header">
+                <span>欢迎使用智能复盘系统</span>
+              </div>
+            </template>
+            <div class="welcome-content">
+              <el-row :gutter="20">
+                <el-col :span="6">
+                  <div class="stat-item" @click="$router.push('/review/create')">
+                    <el-icon :size="40" color="#409EFF"><Plus /></el-icon>
+                    <div class="stat-value">{{ taskCount }}</div>
+                    <div class="stat-label">复盘任务</div>
+                  </div>
+                </el-col>
+                <el-col :span="6">
+                  <div class="stat-item" @click="$router.push('/review')">
+                    <el-icon :size="40" color="#67C23A"><Finished /></el-icon>
+                    <div class="stat-value">{{ completedCount }}</div>
+                    <div class="stat-label">已完成</div>
+                  </div>
+                </el-col>
+                <el-col :span="6">
+                  <div class="stat-item">
+                    <el-icon :size="40" color="#E6A23C"><Warning /></el-icon>
+                    <div class="stat-value">{{ warningCount }}</div>
+                    <div class="stat-label">进行中</div>
+                  </div>
+                </el-col>
+                <el-col :span="6">
+                  <div class="stat-item">
+                    <el-icon :size="40" color="#909399"><Clock /></el-icon>
+                    <div class="stat-value">{{ pendingCount }}</div>
+                    <div class="stat-label">待执行</div>
+                  </div>
+                </el-col>
+              </el-row>
+            </div>
+          </el-card>
+        </div>
+        
+        <!-- 快速开始 -->
+        <div class="quick-start">
           <el-row :gutter="20">
-            <el-col :span="6">
-              <div class="stat-item" @click="$router.push('/review/create')">
-                <el-icon :size="40" color="#409EFF"><Plus /></el-icon>
-                <div class="stat-value">{{ taskCount }}</div>
-                <div class="stat-label">复盘任务</div>
-              </div>
+            <el-col :span="8">
+              <el-card class="action-card" shadow="hover" @click="$router.push('/review/create')">
+                <el-icon :size="48" color="#409EFF"><Plus /></el-icon>
+                <h3>创建复盘</h3>
+                <p>选择日期和复盘类型，自动获取Baostock股票数据进行分析</p>
+                <el-button type="primary">立即创建</el-button>
+              </el-card>
             </el-col>
-            <el-col :span="6">
-              <div class="stat-item" @click="$router.push('/review')">
-                <el-icon :size="40" color="#67C23A"><Finished /></el-icon>
-                <div class="stat-value">{{ completedCount }}</div>
-                <div class="stat-label">已完成</div>
-              </div>
+            <el-col :span="8">
+              <el-card class="action-card" shadow="hover" @click="$router.push('/review')">
+                <el-icon :size="48" color="#67C23A"><List /></el-icon>
+                <h3>历史复盘</h3>
+                <p>查看历史复盘记录、分析报告和趋势图表</p>
+                <el-button type="success">查看历史</el-button>
+              </el-card>
             </el-col>
-            <el-col :span="6">
-              <div class="stat-item">
-                <el-icon :size="40" color="#E6A23C"><Warning /></el-icon>
-                <div class="stat-value">{{ warningCount }}</div>
-                <div class="stat-label">进行中</div>
-              </div>
-            </el-col>
-            <el-col :span="6">
-              <div class="stat-item">
-                <el-icon :size="40" color="#909399"><Clock /></el-icon>
-                <div class="stat-value">{{ pendingCount }}</div>
-                <div class="stat-label">待执行</div>
-              </div>
+            <el-col :span="8">
+              <el-card class="action-card" shadow="hover" @click="$router.push('/datasource')">
+                <el-icon :size="48" color="#909399"><DataLine /></el-icon>
+                <h3>数据管理</h3>
+                <p>管理系统数据源和同步任务</p>
+                <el-button type="info">数据管理</el-button>
+              </el-card>
             </el-col>
           </el-row>
         </div>
-      </el-card>
-    </div>
-    
-    <!-- 快速开始 -->
-    <div class="quick-start">
-      <el-row :gutter="20">
-        <el-col :span="8">
-          <el-card class="action-card" shadow="hover" @click="$router.push('/review/create')">
-            <el-icon :size="48" color="#409EFF"><Plus /></el-icon>
-            <h3>创建复盘</h3>
-            <p>选择日期和复盘类型，自动获取Baostock股票数据进行分析</p>
-            <el-button type="primary">立即创建</el-button>
-          </el-card>
-        </el-col>
-        <el-col :span="8">
-          <el-card class="action-card" shadow="hover" @click="$router.push('/review')">
-            <el-icon :size="48" color="#67C23A"><List /></el-icon>
-            <h3>历史复盘</h3>
-            <p>查看历史复盘记录、分析报告和趋势图表</p>
-            <el-button type="success">查看历史</el-button>
-          </el-card>
-        </el-col>
-        <el-col :span="8">
-          <el-card class="action-card" shadow="hover" @click="$router.push('/datasource')">
-            <el-icon :size="48" color="#909399"><DataLine /></el-icon>
-            <h3>数据管理</h3>
-            <p>管理系统数据源和同步任务</p>
-            <el-button type="info">数据管理</el-button>
-          </el-card>
-        </el-col>
-      </el-row>
-    </div>
     
     <!-- 近期复盘趋势 -->
     <div class="dashboard-section">
@@ -126,65 +126,65 @@
         <el-empty v-else description="暂无复盘数据，请先创建复盘任务" />
       </el-card>
     </div>
-    
-    <!-- 最近复盘 -->
-    <div class="recent-reviews">
-      <el-card>
-        <template #header>
-          <div class="card-header">
-            <span>最近复盘</span>
-            <el-button type="primary" link @click="$router.push('/review')">查看更多</el-button>
-          </div>
-        </template>
-        <el-table :data="recentTasks" style="width: 100%" v-loading="loading">
-          <el-table-column prop="taskName" label="任务名称" />
-          <el-table-column prop="tradeDate" label="交易日期" width="120">
-            <template #default="{ row }">
-              {{ row.tradeDate || '-' }}
+        
+        <!-- 最近复盘 -->
+        <div class="recent-reviews">
+          <el-card>
+            <template #header>
+              <div class="card-header">
+                <span>最近复盘</span>
+                <el-button type="primary" link @click="$router.push('/review')">查看更多</el-button>
+              </div>
             </template>
-          </el-table-column>
-          <el-table-column prop="status" label="状态" width="100">
-            <template #default="{ row }">
-              <el-tag :type="getStatusType(row.status)">
-                {{ getStatusName(row.status) }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="createTime" label="创建时间" width="160">
-            <template #default="{ row }">
-              {{ formatTime(row.createTime) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="120">
-            <template #default="{ row }">
-              <el-button 
-                type="primary" 
-                link 
-                size="small"
-                v-if="row.status === 'completed'"
+            <el-table :data="recentTasks" style="width: 100%" v-loading="loading">
+              <el-table-column prop="taskName" label="任务名称" />
+              <el-table-column prop="tradeDate" label="交易日期" width="120">
+                <template #default="{ row }">
+                  {{ row.tradeDate || '-' }}
+                </template>
+              </el-table-column>
+              <el-table-column prop="status" label="状态" width="100">
+                <template #default="{ row }">
+                  <el-tag :type="getStatusType(row.status)">
+                    {{ getStatusName(row.status) }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="createTime" label="创建时间" width="160">
+                <template #default="{ row }">
+                  {{ formatTime(row.createTime) }}
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="120">
+                <template #default="{ row }">
+                  <el-button 
+                    type="primary" 
+                    link 
+                    size="small"
+                    v-if="row.status === 'completed'"
                 @click="$router.push(`/review/result/${row.id}`)"
-              >
+                  >
                 查看结果
+                  </el-button>
+                  <el-button 
+                    type="warning" 
+                    link 
+                    size="small"
+                    v-if="row.status === 'pending' || row.status === 'running'"
+                    @click="$router.push(`/review/result/${row.id}`)"
+                  >
+                    查看进度
+                  </el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <el-empty v-if="!loading && recentTasks.length === 0" description="暂无复盘任务">
+              <el-button type="primary" @click="$router.push('/review/create')">
+                创建第一个复盘
               </el-button>
-              <el-button 
-                type="warning" 
-                link 
-                size="small"
-                v-if="row.status === 'pending' || row.status === 'running'"
-                @click="$router.push(`/review/result/${row.id}`)"
-              >
-                查看进度
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-        <el-empty v-if="!loading && recentTasks.length === 0" description="暂无复盘任务">
-          <el-button type="primary" @click="$router.push('/review/create')">
-            创建第一个复盘
-          </el-button>
-        </el-empty>
-      </el-card>
-    </div>
+            </el-empty>
+          </el-card>
+        </div>
   </div>
 </template>
 

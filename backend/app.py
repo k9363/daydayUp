@@ -1,4 +1,6 @@
 # Flask Application Factory
+import logging
+import sys
 from flask import Flask
 from flask_cors import CORS
 from config import config
@@ -8,6 +10,18 @@ from routes.stock import stock_bp
 from routes.sync import sync_bp
 from routes.metadata import metadata_bp
 from routes.scheduler import scheduler_bp
+from routes.tag import tag_bp
+
+# 配置根日志：输出到 stderr（gunicorn 会捕获）
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stderr)]
+)
+
+# 设置所有 logger 级别
+for name in logging.Logger.manager.loggerDict:
+    logging.getLogger(name).setLevel(logging.INFO)
 
 
 def create_app(config_name=None):
@@ -31,6 +45,7 @@ def create_app(config_name=None):
     app.register_blueprint(sync_bp, url_prefix='/api/sync')
     app.register_blueprint(metadata_bp, url_prefix='/api/metadata')
     app.register_blueprint(scheduler_bp, url_prefix='/api/scheduler')
+    app.register_blueprint(tag_bp, url_prefix='/api/tag')
     
     # 根路径健康检查
     @app.route('/api/health')
@@ -88,3 +103,6 @@ if __name__ == '__main__':
     init_scheduler(app)
     
     app.run(host='0.0.0.0', port=5001, debug=True)
+
+# 创建全局 app 实例供 gunicorn 使用
+app = create_app('production')

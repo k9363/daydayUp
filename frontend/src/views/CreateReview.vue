@@ -1,49 +1,49 @@
 <template>
   <div class="create-review">
-    <div class="page-header">
-      <el-page-header @back="$router.back()">
-        <template #content>
-          <span class="page-title">创建复盘任务</span>
-        </template>
-      </el-page-header>
-    </div>
-    
-    <el-card class="form-card">
-      <el-form :model="formData" :rules="rules" ref="formRef" label-width="120px">
-        <el-divider content-position="left">Baostock A股日线数据</el-divider>
+        <div class="page-header">
+          <el-page-header @back="$router.back()">
+            <template #content>
+              <span class="page-title">创建复盘任务</span>
+            </template>
+          </el-page-header>
+        </div>
         
-        <el-alert
-          title="功能说明"
-          type="info"
-          description="此功能将从 Baostock 获取指定日期全A股市场的日线数据，筛选成交额前100名，按板块划分并生成图表分析报告。"
-          show-icon
-          style="margin-bottom: 20px;"
-        />
-        
-        <el-form-item label="任务名称" prop="taskName">
+        <el-card class="form-card">
+          <el-form :model="formData" :rules="rules" ref="formRef" label-width="120px">
+            <el-divider content-position="left">Baostock A股日线数据</el-divider>
+            
+            <el-alert
+              title="功能说明"
+              type="info"
+              description="此功能将从 Baostock 获取指定日期全A股市场的日线数据，筛选成交额前100名，按板块划分并生成图表分析报告。"
+              show-icon
+              style="margin-bottom: 20px;"
+            />
+            
+            <el-form-item label="任务名称" prop="taskName">
           <el-input v-model="formData.taskName" placeholder="选择日期和复盘类型后自动生成" />
-        </el-form-item>
-        
-        <el-form-item label="交易日期" prop="tradeDate">
-          <el-date-picker
-            v-model="formData.tradeDate"
-            type="date"
-            placeholder="选择交易日期"
-            value-format="YYYY-MM-DD"
-            :disabled-date="disabledFutureDate"
-            style="width: 100%"
-          />
-        </el-form-item>
-        
-        <el-form-item class="submit-section">
-          <el-button @click="$router.back()">取消</el-button>
-          <el-button type="primary" :loading="submitting" @click="handleSubmit">
-            <el-icon><Download /></el-icon>
-            获取数据并分析
-          </el-button>
-        </el-form-item>
-      </el-form>
-    </el-card>
+            </el-form-item>
+            
+            <el-form-item label="交易日期" prop="tradeDate">
+              <el-date-picker
+                v-model="formData.tradeDate"
+                type="date"
+                placeholder="选择交易日期"
+                value-format="YYYY-MM-DD"
+                :disabled-date="disabledFutureDate"
+                style="width: 100%"
+              />
+            </el-form-item>
+            
+            <el-form-item class="submit-section">
+              <el-button @click="$router.back()">取消</el-button>
+              <el-button type="primary" :loading="submitting" @click="handleSubmit">
+                <el-icon><Download /></el-icon>
+                获取数据并分析
+              </el-button>
+            </el-form-item>
+          </el-form>
+        </el-card>
   </div>
 </template>
 
@@ -93,9 +93,9 @@ const handleSubmit = async () => {
     submitting.value = true
     
     try {
-      const res = await createBaostockReviewTask({
-        taskName: formData.taskName,
-        tradeDate: formData.tradeDate,
+    const res = await createBaostockReviewTask({
+      taskName: formData.taskName,
+      tradeDate: formData.tradeDate,
         reviewType: 'daily'
       })
       
@@ -122,7 +122,7 @@ const handleSubmit = async () => {
             tradeDate: formData.tradeDate,
             reviewType: 'daily',
             overwrite: true
-          })
+    })
           ElMessage.success('任务已覆盖重建')
           router.push('/review')
         } catch (confirmError) {

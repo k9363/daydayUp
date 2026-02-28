@@ -13,55 +13,55 @@
       <!-- 创建任务对话框 -->
       <el-dialog v-model="showForm" title="创建同步任务" width="600px" :close-on-click-modal="false">
         <el-form :model="formData" label-width="100px">
-          <el-form-item label="任务名称">
-            <el-input v-model="formData.taskName" placeholder="请输入任务名称（可选）" />
-          </el-form-item>
-          <el-form-item label="开始日期" required>
-            <el-date-picker
-              v-model="formData.startDate"
-              type="date"
-              placeholder="选择开始日期"
-              value-format="YYYY-MM-DD"
-              :disabled-date="disabledStartDate"
+            <el-form-item label="任务名称">
+              <el-input v-model="formData.taskName" placeholder="请输入任务名称（可选）" />
+            </el-form-item>
+            <el-form-item label="开始日期" required>
+              <el-date-picker
+                v-model="formData.startDate"
+                type="date"
+                placeholder="选择开始日期"
+                value-format="YYYY-MM-DD"
+                :disabled-date="disabledStartDate"
               style="width: 100%"
-            />
-          </el-form-item>
-          <el-form-item label="结束日期" required>
-            <el-date-picker
-              v-model="formData.endDate"
-              type="date"
-              placeholder="选择结束日期"
-              value-format="YYYY-MM-DD"
-              :disabled-date="disabledEndDate"
+              />
+            </el-form-item>
+            <el-form-item label="结束日期" required>
+              <el-date-picker
+                v-model="formData.endDate"
+                type="date"
+                placeholder="选择结束日期"
+                value-format="YYYY-MM-DD"
+                :disabled-date="disabledEndDate"
               style="width: 100%"
-            />
-          </el-form-item>
-          <el-form-item label="K线频率" required>
-            <el-select v-model="formData.frequency" placeholder="选择K线频率" style="width: 100%">
-              <el-option
-                v-for="item in frequencyOptions"
-                :key="item.value"
-                :label="item.label"
-                :value="item.value"
-              >
-                <span>{{ item.label }}</span>
+              />
+            </el-form-item>
+            <el-form-item label="K线频率" required>
+              <el-select v-model="formData.frequency" placeholder="选择K线频率" style="width: 100%">
+                <el-option
+                  v-for="item in frequencyOptions"
+                  :key="item.value"
+                  :label="item.label"
+                  :value="item.value"
+                >
+                  <span>{{ item.label }}</span>
                 <span style="color: #8492a6; font-size: 12px; margin-left: 10px">{{ item.description }}</span>
-              </el-option>
-            </el-select>
-          </el-form-item>
-          <el-form-item label="股票范围">
-            <el-select v-model="formData.stockType" placeholder="选择股票范围" style="width: 100%">
-              <el-option
-                v-for="item in stockTypeOptions"
-                :key="item.value"
-                :label="item.label"
-                :value="item.value"
-              >
-                <span>{{ item.label }}</span>
+                </el-option>
+              </el-select>
+            </el-form-item>
+            <el-form-item label="股票范围">
+              <el-select v-model="formData.stockType" placeholder="选择股票范围" style="width: 100%">
+                <el-option
+                  v-for="item in stockTypeOptions"
+                  :key="item.value"
+                  :label="item.label"
+                  :value="item.value"
+                >
+                  <span>{{ item.label }}</span>
                 <span style="color: #8492a6; font-size: 12px; margin-left: 10px">{{ item.description }}</span>
-              </el-option>
-            </el-select>
-          </el-form-item>
+                </el-option>
+              </el-select>
+            </el-form-item>
         </el-form>
         <template #footer>
           <el-button @click="showForm = false">取消</el-button>

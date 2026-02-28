@@ -1,81 +1,81 @@
 <template>
   <div class="review">
-    <div class="page-header">
+        <div class="page-header">
       <h2>每日复盘</h2>
-      <el-button type="primary" @click="$router.push('/review/create')">
-        <el-icon><Plus /></el-icon>
-        创建复盘
-      </el-button>
-    </div>
-    
-    <!-- 统计卡片 -->
-    <el-row :gutter="20" class="stat-row">
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card">
-          <div class="stat-content">
-            <el-icon :size="32" color="#409EFF"><Document /></el-icon>
-            <div class="stat-info">
-              <div class="stat-num">{{ totalCount }}</div>
-              <div class="stat-text">总任务数</div>
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card">
-          <div class="stat-content">
-            <el-icon :size="32" color="#67C23A"><CircleCheck /></el-icon>
-            <div class="stat-info">
-              <div class="stat-num">{{ completedCount }}</div>
-              <div class="stat-text">已完成</div>
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card">
-          <div class="stat-content">
-            <el-icon :size="32" color="#E6A23C"><Warning /></el-icon>
-            <div class="stat-info">
-              <div class="stat-num">{{ pendingCount }}</div>
-              <div class="stat-text">待执行</div>
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card">
-          <div class="stat-content">
-            <el-icon :size="32" color="#F56C6C"><CircleClose /></el-icon>
-            <div class="stat-info">
-              <div class="stat-num">{{ failedCount }}</div>
-              <div class="stat-text">失败</div>
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
-    
-    <!-- 任务列表 -->
-    <el-card>
-      <el-table :data="taskList" style="width: 100%" v-loading="loading">
-        <el-table-column type="index" label="#" width="60" />
-        <el-table-column prop="taskName" label="任务名称" min-width="150" />
-        <el-table-column prop="status" label="状态" width="120">
-          <template #default="{ row }">
-            <el-tag :type="getStatusType(row.status)">
-              {{ getStatusName(row.status) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="resultSummary" label="结果摘要" min-width="200" show-overflow-tooltip />
-        <el-table-column prop="createTime" label="创建时间" width="180">
-          <template #default="{ row }">
-            {{ formatTime(row.createTime) }}
-          </template>
-        </el-table-column>
+          <el-button type="primary" @click="$router.push('/review/create')">
+            <el-icon><Plus /></el-icon>
+            创建复盘
+          </el-button>
+        </div>
+        
+        <!-- 统计卡片 -->
+        <el-row :gutter="20" class="stat-row">
+          <el-col :span="6">
+            <el-card shadow="hover" class="stat-card">
+              <div class="stat-content">
+                <el-icon :size="32" color="#409EFF"><Document /></el-icon>
+                <div class="stat-info">
+                  <div class="stat-num">{{ totalCount }}</div>
+                  <div class="stat-text">总任务数</div>
+                </div>
+              </div>
+            </el-card>
+          </el-col>
+          <el-col :span="6">
+            <el-card shadow="hover" class="stat-card">
+              <div class="stat-content">
+                <el-icon :size="32" color="#67C23A"><CircleCheck /></el-icon>
+                <div class="stat-info">
+                  <div class="stat-num">{{ completedCount }}</div>
+                  <div class="stat-text">已完成</div>
+                </div>
+              </div>
+            </el-card>
+          </el-col>
+          <el-col :span="6">
+            <el-card shadow="hover" class="stat-card">
+              <div class="stat-content">
+                <el-icon :size="32" color="#E6A23C"><Warning /></el-icon>
+                <div class="stat-info">
+                  <div class="stat-num">{{ pendingCount }}</div>
+                  <div class="stat-text">待执行</div>
+                </div>
+              </div>
+            </el-card>
+          </el-col>
+          <el-col :span="6">
+            <el-card shadow="hover" class="stat-card">
+              <div class="stat-content">
+                <el-icon :size="32" color="#F56C6C"><CircleClose /></el-icon>
+                <div class="stat-info">
+                  <div class="stat-num">{{ failedCount }}</div>
+                  <div class="stat-text">失败</div>
+                </div>
+              </div>
+            </el-card>
+          </el-col>
+        </el-row>
+        
+        <!-- 任务列表 -->
+        <el-card>
+          <el-table :data="taskList" style="width: 100%" v-loading="loading">
+            <el-table-column type="index" label="#" width="60" />
+            <el-table-column prop="taskName" label="任务名称" min-width="150" />
+            <el-table-column prop="status" label="状态" width="120">
+              <template #default="{ row }">
+                <el-tag :type="getStatusType(row.status)">
+                  {{ getStatusName(row.status) }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="resultSummary" label="结果摘要" min-width="200" show-overflow-tooltip />
+            <el-table-column prop="createTime" label="创建时间" width="180">
+              <template #default="{ row }">
+                {{ formatTime(row.createTime) }}
+              </template>
+            </el-table-column>
         <el-table-column label="操作" width="250" fixed="right">
-          <template #default="{ row }">
+              <template #default="{ row }">
             <el-button 
               type="primary" 
               link 
@@ -86,25 +86,25 @@
               <el-icon><DataAnalysis /></el-icon>
               查看结果
             </el-button>
-            <el-button 
-              type="primary" 
-              link 
-              size="small"
-              v-if="row.status === 'pending'"
-              @click="executeTask(row)"
-            >
-              <el-icon><VideoPlay /></el-icon>
-              执行
-            </el-button>
-            <el-button 
-              type="warning" 
-              link 
-              size="small"
-              v-if="row.status === 'running'"
-              loading
-            >
-              执行中
-            </el-button>
+                <el-button 
+                  type="primary" 
+                  link 
+                  size="small"
+                  v-if="row.status === 'pending'"
+                  @click="executeTask(row)"
+                >
+                  <el-icon><VideoPlay /></el-icon>
+                  执行
+                </el-button>
+                <el-button 
+                  type="warning" 
+                  link 
+                  size="small"
+                  v-if="row.status === 'running'"
+                  loading
+                >
+                  执行中
+                </el-button>
             <el-button 
               type="danger" 
               link 
@@ -114,14 +114,14 @@
               <el-icon><Delete /></el-icon>
               删除
             </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      
-      <el-empty v-if="!loading && taskList.length === 0" description="暂无复盘任务">
-        <el-button type="primary" @click="$router.push('/review/create')">创建复盘</el-button>
-      </el-empty>
-    </el-card>
+              </template>
+            </el-table-column>
+          </el-table>
+          
+          <el-empty v-if="!loading && taskList.length === 0" description="暂无复盘任务">
+            <el-button type="primary" @click="$router.push('/review/create')">创建复盘</el-button>
+          </el-empty>
+        </el-card>
   </div>
 </template>
 

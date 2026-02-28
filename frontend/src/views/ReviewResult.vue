@@ -27,7 +27,7 @@
     <div v-else-if="chartData" class="content">
       <!-- 指数行情 -->
       <el-card shadow="hover" class="index-card" v-if="indexData.length > 0">
-        <template #header>
+            <template #header>
           <span>主要指数行情</span>
         </template>
         <el-table :data="indexData" stripe style="width: 100%">
@@ -56,36 +56,55 @@
             </template>
           </el-table-column>
         </el-table>
-      </el-card>
+          </el-card>
 
       <!-- 因子得分排名 Top 10 -->
       <el-card shadow="hover" class="stock-table-card" v-if="top10FactorStocks.length > 0">
         <template #header>
           <span>因子得分 Top 10 股票</span>
         </template>
-        <el-table :data="top10FactorStocks" stripe style="width: 100%">
-          <el-table-column type="index" label="排名" width="80" align="center" />
-          <el-table-column prop="code" label="代码" width="100" />
-          <el-table-column prop="name" label="名称" width="120" />
-          <el-table-column label="成交额(亿)" width="140" align="right">
+        <el-table :data="top10FactorStocks" stripe>
+          <el-table-column type="index" label="排名" width="60" align="center" />
+          <el-table-column prop="code" label="代码" width="90" />
+          <el-table-column prop="name" label="名称" width="80" />
+          <el-table-column label="成交额(亿)" width="90" align="right">
             <template #default="{ row }">
               {{ formatAmount(row.amount || row.turnover || 0) }}
             </template>
           </el-table-column>
-          <el-table-column prop="sector" label="所属板块" width="180" />
-          <el-table-column label="综合得分" width="100" align="center">
+          <el-table-column prop="sector" label="所属板块" min-width="100" />
+          <el-table-column label="标签" min-width="120">
+            <template #default="{ row }">
+              <div v-if="stockTags[row.code] && stockTags[row.code].length > 0">
+                <el-tag
+                  v-for="tag in stockTags[row.code].slice(0, 2)"
+                  :key="tag.id"
+                  :color="tag.color"
+                  :style="{ color: getTagTextColor(tag.color) }"
+                  size="small"
+                >
+                  {{ tag.name }}
+                </el-tag>
+                <el-tag v-if="stockTags[row.code].length > 2" type="info" size="small">
+                  +{{ stockTags[row.code].length - 2 }}
+                </el-tag>
+              </div>
+              <span v-else class="no-tag">无</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="综合得分" width="80" align="center">
             <template #default="{ row }">
               <el-tag type="success">{{ row.totalScore.toFixed(2) }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="因子1(排名)" width="100" align="center">
+          <el-table-column label="成交额权重" width="80" align="center">
             <template #default="{ row }">
               <el-tooltip :content="`成交额排名: 第${Math.round((10 - row.factor1Rank) / 0.2 + 1)}名`" placement="top">
                 {{ row.factor1Rank.toFixed(1) }}
               </el-tooltip>
             </template>
           </el-table-column>
-          <el-table-column label="因子2(均线)" width="100" align="center">
+          <el-table-column label="短线趋势" width="80" align="center">
             <template #default="{ row }">
               <el-tooltip :content="`收盘: ${row.currentPrice || '-'} | MA5: ${row.ma5 || '-'} | MA10: ${row.ma10 || '-'}`" placement="top">
                 <span :class="row.factor2MA >= 0 ? 'positive' : 'negative'">
@@ -94,7 +113,7 @@
               </el-tooltip>
             </template>
           </el-table-column>
-          <el-table-column label="因子3(量能)" width="100" align="center">
+          <el-table-column label="昨日同比" width="80" align="center">
             <template #default="{ row }">
               <el-tooltip :content="`今量: ${row.volCurrent ? (row.volCurrent / 10000).toFixed(0) + '万' : '-'} | 昨量: ${row.volPrev ? (row.volPrev / 10000).toFixed(0) + '万' : '-'}`" placement="top">
                 <span :class="row.factor3Vol >= 0 ? 'positive' : 'negative'">
@@ -103,13 +122,38 @@
               </el-tooltip>
             </template>
           </el-table-column>
-          <el-table-column label="因子4(量比)" width="100" align="center">
+          <el-table-column label="爆量" width="70" align="center">
             <template #default="{ row }">
-              <el-tooltip :content="`近5日均: ${row.avg5dTurnover ? (row.avg5dTurnover / 100000000).toFixed(2) + '亿' : '-'} | 前5日均: ${row.avg5dBeforeTurnover ? (row.avg5dBeforeTurnover / 100000000).toFixed(2) + '亿' : '-'}`" placement="top">
-                <span :class="row.factor4Amt >= 0 ? 'positive' : 'negative'">
-                  {{ row.factor4Amt >= 0 ? '+' : '' }}{{ row.factor4Amt.toFixed(1) }}
+              <el-tooltip :content="`近3日均: ${row.avg3dTurnover ? (row.avg3dTurnover / 100000000).toFixed(2) + '亿' : '-'} | 前5-20日均: ${row.avg520dTurnover ? (row.avg520dTurnover / 100000000).toFixed(2) + '亿' : '-'}`" placement="top">
+                <span :class="row.factor4Burst >= 0 ? 'positive' : 'negative'">
+                  {{ row.factor4Burst >= 0 ? '+' : '' }}{{ row.factor4Burst.toFixed(1) }}
                 </span>
               </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="极限量" width="70" align="center">
+            <template #default="{ row }">
+              <el-tooltip :content="`近10日均: ${row.avg10dTurnover ? (row.avg10dTurnover / 100000000).toFixed(2) + '亿' : '-'} | 前11-30日均: ${row.avg1130dTurnover ? (row.avg1130dTurnover / 100000000).toFixed(2) + '亿' : '-'}`" placement="top">
+                <span :class="row.factor5Extreme >= 0 ? 'positive' : 'negative'">
+                  {{ row.factor5Extreme >= 0 ? '+' : '' }}{{ row.factor5Extreme.toFixed(1) }}
+                </span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="多头趋势" width="80" align="center">
+            <template #default="{ row }">
+              <el-tooltip :content="`15日MA5: ${row.ma5_15d || '-'} | 15日MA10: ${row.ma10_15d || '-'}`" placement="top">
+                <span :class="row.factor6Trend >= 0 ? 'positive' : 'negative'">
+                  {{ row.factor6Trend >= 0 ? '+' : '' }}{{ row.factor6Trend.toFixed(2) }}
+                </span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="100" align="center">
+            <template #default="{ row }">
+              <el-button type="warning" link size="small" @click="openTagDialog(row)">
+                管理标签
+              </el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -122,7 +166,7 @@
         </template>
         <el-table :data="sectors" stripe style="width: 100%">
           <el-table-column type="index" label="排名" width="80" align="center" />
-          <el-table-column prop="sector" label="板块" width="180" />
+          <el-table-column prop="sector" label="板块" width="200" />
           <el-table-column label="得分" width="100" align="center">
             <template #default="{ row }">
               <el-tag type="warning">{{ Math.round(row.score) }}</el-tag>
@@ -133,47 +177,6 @@
               <el-tag type="info" class="clickable-tag" @click="handleShowSectorStocks(row)">
                 {{ row.count }}只
               </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="实际涨幅" width="120" align="center">
-            <template #default="{ row }">
-              <span :class="row.avgPctChg >= 0 ? 'positive' : 'negative'">
-                {{ row.avgPctChg >= 0 ? '+' : '' }}{{ row.avgPctChg.toFixed(2) }}%
-              </span>
-            </template>
-          </el-table-column>
-          <el-table-column label="因子1" width="100" align="center">
-            <template #default="{ row }">
-              <el-tooltip content="板块内前30股票因子1得分合计" placement="top">
-                <span class="factor-label">{{ row.factor1?.toFixed(1) || 0 }}</span>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-          <el-table-column label="因子2" width="100" align="center">
-            <template #default="{ row }">
-              <el-tooltip content="板块内前30股票因子2得分合计" placement="top">
-                <span :class="(row.factor2 || 0) >= 0 ? 'positive' : 'negative'">
-                  {{ (row.factor2 || 0) >= 0 ? '+' : '' }}{{ (row.factor2 || 0).toFixed(1) }}
-                </span>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-          <el-table-column label="因子3" width="100" align="center">
-            <template #default="{ row }">
-              <el-tooltip content="板块内前30股票因子3得分合计" placement="top">
-                <span :class="(row.factor3 || 0) >= 0 ? 'positive' : 'negative'">
-                  {{ (row.factor3 || 0) >= 0 ? '+' : '' }}{{ (row.factor3 || 0).toFixed(1) }}
-                </span>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-          <el-table-column label="因子4" width="100" align="center">
-            <template #default="{ row }">
-              <el-tooltip content="板块内前30股票因子4得分合计" placement="top">
-                <span :class="(row.factor4 || 0) >= 0 ? 'positive' : 'negative'">
-                  {{ (row.factor4 || 0) >= 0 ? '+' : '' }}{{ (row.factor4 || 0).toFixed(1) }}
-                </span>
-              </el-tooltip>
             </template>
           </el-table-column>
         </el-table>
@@ -219,15 +222,15 @@
       <el-dialog
         v-model="showSectorStocksDialog"
         :title="currentSectorName + ' - 成分股'"
-        width="800px"
+        width="600px"
       >
-        <el-table :data="sectorStocksList" v-loading="sectorStocksLoading" stripe max-height="400">
-          <el-table-column prop="stock_code" label="代码" width="100" />
-          <el-table-column prop="stock_name" label="名称" width="120" />
-          <el-table-column prop="industry" label="所属行业" width="120" />
-          <el-table-column label="总市值(亿)" width="120" align="right">
+        <el-table :data="sectorStocksList" stripe>
+          <el-table-column type="index" label="排名" width="80" align="center" />
+          <el-table-column prop="stock_code" label="代码" width="120" />
+          <el-table-column prop="stock_name" label="名称" width="150" />
+          <el-table-column label="得分" width="100" align="center">
             <template #default="{ row }">
-              {{ formatMarketValue(row.total_market_value) }}
+              <el-tag type="warning">{{ row.total_score?.toFixed(2) || row.totalScore?.toFixed(2) || 0 }}</el-tag>
             </template>
           </el-table-column>
         </el-table>
@@ -236,6 +239,49 @@
             <el-button @click="showSectorStocksDialog = false">关闭</el-button>
           </span>
         </template>
+      </el-dialog>
+
+      <!-- 标签管理弹窗 -->
+      <el-dialog
+        v-model="showTagDialog"
+        :title="'管理标签 - ' + (currentTagStock ? currentTagStock.code + ' ' + currentTagStock.name : '')"
+        width="700px"
+      >
+        <!-- 标签列表 -->
+        <div class="tag-management">
+          <div class="section-title">选择标签：</div>
+          <div class="tag-list">
+            <el-tag
+              v-for="tag in allTags"
+              :key="tag.id"
+              :color="tag.color"
+              :style="{ color: getTagTextColor(tag.color) }"
+              :effect="stockTags[currentTagStock?.code]?.some(t => t.id === tag.id) ? 'dark' : 'plain'"
+              class="selectable-tag"
+              @click="toggleStockTag(tag)"
+            >
+              {{ tag.name }}
+            </el-tag>
+          </div>
+          
+          <el-divider />
+          
+          <!-- 创建新标签 -->
+          <div class="create-tag">
+            <div class="section-title">创建新标签：</div>
+            <el-form :inline="true" :model="newTagForm">
+              <el-form-item label="标签名称">
+                <el-input v-model="newTagForm.name" placeholder="请输入标签名称" style="width: 150px" />
+              </el-form-item>
+              <el-form-item label="标签颜色">
+                <el-color-picker v-model="newTagForm.color" />
+              </el-form-item>
+              <el-form-item>
+                <el-button type="primary" @click="handleCreateTag">创建</el-button>
+              </el-form-item>
+            </el-form>
+          </div>
+        </div>
       </el-dialog>
     </div>
   </div>
@@ -247,7 +293,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
-import { getSectorStocks } from '@/api'
+import { getSectorStocks, getTags, addTag, addStockTag, removeStockTag, getBatchStockTags } from '@/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -271,6 +317,16 @@ const sectorStocksList = ref([])
 const currentSectorName = ref('')
 const sectorStocksTotal = ref(0)
 
+// 标签管理
+const showTagDialog = ref(false)
+const allTags = ref([])
+const stockTags = ref({})  // { stock_code: [tag1, tag2, ...] }
+const currentTagStock = ref(null)
+const newTagForm = ref({
+  name: '',
+  color: '#409EFF'
+})
+
 // 计算属性
 const summary = computed(() => chartData.value?.summary || {})
 const sectors = computed(() => chartData.value?.sectors || [])
@@ -290,8 +346,10 @@ const refreshData = () => {
 
 // 点击查看板块成分股
 const handleShowSectorStocks = async (row) => {
+  console.log('点击板块股票数量, row:', row)
   // 优先使用后端返回的前30股票列表
   if (row.topStocks && row.topStocks.length > 0) {
+    console.log('使用topStocks数据:', row.topStocks)
     sectorStocksList.value = row.topStocks.map(s => ({
       stock_code: s.code,
       stock_name: s.name,
@@ -362,6 +420,95 @@ const formatMarketValue = (value) => {
   return `${(value / 100000000).toFixed(2)}亿`
 }
 
+// 加载所有标签
+const loadAllTags = async () => {
+  try {
+    const res = await getTags()
+    if (res.code === 200) {
+      allTags.value = res.data || []
+    }
+  } catch (error) {
+    console.error('获取标签列表失败:', error)
+  }
+}
+
+// 批量加载股票标签
+const loadBatchStockTags = async (stockCodes) => {
+  if (!stockCodes || stockCodes.length === 0) return
+  try {
+    const res = await getBatchStockTags(stockCodes)
+    if (res.code === 200) {
+      stockTags.value = res.data || {}
+    }
+  } catch (error) {
+    console.error('获取股票标签失败:', error)
+  }
+}
+
+// 打开标签管理弹窗
+const openTagDialog = async (stock) => {
+  currentTagStock.value = stock
+  showTagDialog.value = true
+  // 加载所有标签
+  await loadAllTags()
+  // 加载当前股票的标签
+  await loadBatchStockTags([stock.code])
+}
+
+// 切换股票的标签
+const toggleStockTag = async (tag) => {
+  if (!currentTagStock.value) return
+  const stockCode = currentTagStock.value.code
+  const hasTag = stockTags.value[stockCode]?.some(t => t.id === tag.id)
+  
+  try {
+    if (hasTag) {
+      await removeStockTag(stockCode, tag.id)
+      stockTags.value[stockCode] = stockTags.value[stockCode].filter(t => t.id !== tag.id)
+    } else {
+      await addStockTag(stockCode, tag.id)
+      if (!stockTags.value[stockCode]) {
+        stockTags.value[stockCode] = []
+      }
+      stockTags.value[stockCode].push(tag)
+    }
+  } catch (error) {
+    console.error('更新标签失败:', error)
+  }
+}
+
+// 创建新标签
+const handleCreateTag = async () => {
+  if (!newTagForm.value.name.trim()) {
+    ElMessage.warning('请输入标签名称')
+    return
+  }
+  try {
+    const res = await addTag(newTagForm.value)
+    if (res.code === 200) {
+      ElMessage.success('标签创建成功')
+      await loadAllTags()
+      newTagForm.value.name = ''
+      newTagForm.value.color = '#409EFF'
+    } else {
+      ElMessage.error(res.message || '创建失败')
+    }
+  } catch (error) {
+    console.error('创建标签失败:', error)
+  }
+}
+
+// 计算标签文字颜色
+const getTagTextColor = (color) => {
+  if (!color) return '#fff'
+  const hex = color.replace('#', '')
+  const r = parseInt(hex.substr(0, 2), 16)
+  const g = parseInt(hex.substr(2, 2), 16)
+  const b = parseInt(hex.substr(4, 2), 16)
+  const brightness = (r * 299 + g * 587 + b * 114) / 1000
+  return brightness > 128 ? '#000' : '#fff'
+}
+
 // 获取图表数据
 const fetchChartData = async () => {
   loading.value = true
@@ -376,6 +523,12 @@ const fetchChartData = async () => {
       // 数据加载后初始化图表
       await nextTick()
       initCharts()
+      
+      // 加载股票标签
+      const stockCodes = (chartData.value?.top10FactorStocks || []).map(s => s.code)
+      if (stockCodes.length > 0) {
+        await loadBatchStockTags(stockCodes)
+      }
     } else {
       error.value = result.message || '获取数据失败'
     }
@@ -661,5 +814,44 @@ watch(() => chartData.value, () => {
 .clickable-tag:hover {
   color: #409eff;
   transform: scale(1.05);
+}
+
+/* 标签管理样式 */
+.tag-management {
+  padding: 10px 0;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.selectable-tag {
+  cursor: pointer;
+  padding: 8px 15px;
+  border-radius: 4px;
+  transition: all 0.3s;
+}
+
+.selectable-tag:hover {
+  transform: scale(1.05);
+}
+
+.no-tag {
+  color: #909399;
+  font-size: 12px;
+}
+
+.create-tag {
+  margin-top: 10px;
+}
+
+.section-title {
+  font-size: 14px;
+  font-weight: bold;
+  margin-bottom: 10px;
+  color: #303133;
 }
 </style>

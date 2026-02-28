@@ -111,7 +111,7 @@ class DataSyncService:
 
         if not data_list:
             logger.error(f"获取股票列表失败: {error_msg}")
-            
+
         return data_list
 
     def get_kline_data(self, code, start_date, end_date, frequency='d', adjustflag='2'):
@@ -157,7 +157,7 @@ class DataSyncService:
         fields = fields_map.get(bs_freq, fields_map['d'])
 
         logger.info(f"查询K线: code={code}, start={start_date}, end={end_date}, freq={bs_freq}")
-        
+
         rs = bs.query_history_k_data_plus(
             code=code,
             start_date=start_date,
@@ -221,8 +221,8 @@ class DataSyncService:
             existing_set = {(r.stock_code, r.trade_date) for r in existing_records}
             logger.info(f"批量查询: 发现 {len(existing_set)} 条已存在的记录")
 
-        # 批量添加新记录
-        records_to_add = []
+        # 批量添加新记录 - 使用字典映射替代ORM对象
+        mappings = []
         for row in data_list:
             if not row.get('code') or row.get('close') == '':
                 logger.warning(f"跳过无效数据: {row}")
@@ -244,42 +244,43 @@ class DataSyncService:
             stock_name = stock_name_map.get(code, '')
             if not stock_name:
                 stock_name = row.get('code_name', '') or row.get('stock_name', '')
-            
-            record = model_class(
-                stock_code=code,
-                stock_name=stock_name,
-                trade_date=trade_date,
-                open_price=row.get('open', 0) or None,
-                high_price=row.get('high', 0) or None,
-                low_price=row.get('low', 0) or None,
-                close_price=row.get('close', 0) or None,
-                pre_close_price=row.get('preclose', 0) or None,
-                volume=row.get('volume', 0) or None,
-                turnover=row.get('amount', 0) or None,
-                change_percent=row.get('pctChg', 0) or None,
-            )
+
+            # 构建字典映射
+            mapping = {
+                'stock_code': code,
+                'stock_name': stock_name,
+                'trade_date': trade_date,
+                'open_price': row.get('open', 0) or None,
+                'high_price': row.get('high', 0) or None,
+                'low_price': row.get('low', 0) or None,
+                'close_price': row.get('close', 0) or None,
+                'pre_close_price': row.get('preclose', 0) or None,
+                'volume': row.get('volume', 0) or None,
+                'turnover': row.get('amount', 0) or None,
+                'change_percent': row.get('pctChg', 0) or None,
+            }
 
             # 周线和月线特有字段
             if frequency == 'weekly':
-                record.week_open = row.get('open', 0) or None
-                record.week_close = row.get('close', 0) or None
-                record.week_high = row.get('high', 0) or None
-                record.week_low = row.get('low', 0) or None
+                mapping['week_open'] = row.get('open', 0) or None
+                mapping['week_close'] = row.get('close', 0) or None
+                mapping['week_high'] = row.get('high', 0) or None
+                mapping['week_low'] = row.get('low', 0) or None
             elif frequency == 'monthly':
-                record.month_open = row.get('open', 0) or None
-                record.month_close = row.get('close', 0) or None
-                record.month_high = row.get('high', 0) or None
-                record.month_low = row.get('low', 0) or None
+                mapping['month_open'] = row.get('open', 0) or None
+                mapping['month_close'] = row.get('close', 0) or None
+                mapping['month_high'] = row.get('high', 0) or None
+                mapping['month_low'] = row.get('low', 0) or None
             elif frequency in ['5', '15', '30', '60']:
-                record.frequency = frequency
+                mapping['frequency'] = frequency
 
-            records_to_add.append(record)
+            mappings.append(mapping)
             saved_count += 1
 
-        # 批量添加
-        if records_to_add:
-            db_session.bulk_save_objects(records_to_add)
-        
+        # 批量添加 - 使用 bulk_insert_mappings
+        if mappings:
+            db_session.bulk_insert_mappings(model_class, mappings)
+
         db_session.commit()
         logger.info(f"保存完成: 新增 {saved_count} 条")
         return saved_count
@@ -320,9 +321,9 @@ class DataSyncService:
         
         task = None
         if task_id > 0:
-            task = DataSyncTask.query.get(task_id)
-            if not task:
-                raise Exception(f"任务不存在: {task_id}")
+        task = DataSyncTask.query.get(task_id)
+        if not task:
+            raise Exception(f"任务不存在: {task_id}")
 
         # 断点续传：检查是否已有已处理的股票列表
         processed_codes_set = set()
@@ -338,9 +339,9 @@ class DataSyncService:
             logger.info(f"任务继续执行，已处理 {len(processed_codes_set)} 只股票")
         
         if task:
-            task.status = 'running'
-            task.start_time = datetime.now()
-            db_session.commit()
+        task.status = 'running'
+        task.start_time = datetime.now()
+        db_session.commit()
 
         try:
             self.login()
@@ -389,8 +390,8 @@ class DataSyncService:
                 logger.info(f"从数据库获取到 {len(stock_codes)} 只股票")
             
             if task:
-                task.total_stocks = len(stock_codes)
-                db_session.commit()
+            task.total_stocks = len(stock_codes)
+            db_session.commit()
 
             # 断点续传：过滤掉已处理的股票
             remaining_codes = [code for code in stock_codes if code not in processed_codes_set]
@@ -399,6 +400,11 @@ class DataSyncService:
             total_processed = len(processed_codes_set)
             total_saved = 0
 
+            # 批量保存：积累多只股票数据后再保存
+            batch_data_list = []  # 积累多只股票的数据
+            current_batch_size = 0
+            save_batch_size = 100  # 每100条数据批量保存一次
+
             for i, code in enumerate(remaining_codes):
                 try:
                     # 获取K线数据
@@ -406,17 +412,23 @@ class DataSyncService:
                     logger.info(f"获取 {code} 数据: {len(data_list)} 条")
 
                     if data_list:
-                        # 每只股票处理完立即保存
-                        saved = self.save_kline_data(db_session, data_list, frequency, stock_name_map)
-                        logger.info(f"保存: {saved} 条")
-                        total_saved += saved
-                        db_session.commit()
+                        # 积累数据
+                        batch_data_list.extend(data_list)
+                        current_batch_size += len(data_list)
+
+                        # 达到批量阈值时保存
+                        if current_batch_size >= save_batch_size:
+                            saved = self.save_kline_data(db_session, batch_data_list, frequency, stock_name_map)
+                            logger.info(f"批量保存: {saved} 条")
+                            total_saved += saved
+                            batch_data_list = []  # 清空批次
+                            current_batch_size = 0
 
                     total_processed += 1
                     if task:
-                        task.processed_stocks = total_processed
+                    task.processed_stocks = total_processed
                         task.total_records = total_saved
-                    
+
                     # 断点续传：更新已处理的股票代码列表（每10个股票更新一次）
                     processed_codes_set.add(code)
                     if task and (total_processed) % 10 == 0:
@@ -429,6 +441,12 @@ class DataSyncService:
                 except Exception as e:
                     logger.error(f"获取 {code} 数据失败: {e}")
                     continue
+
+            # 最后一批不足阈值的也要保存
+            if batch_data_list:
+                saved = self.save_kline_data(db_session, batch_data_list, frequency, stock_name_map)
+                logger.info(f"最后批量保存: {saved} 条")
+                total_saved += saved
 
             # 补充元数据（股票信息、板块信息、股票-板块关联）
             logger.info(f"开始为 {len(stock_codes)} 只股票补充元数据...")
@@ -455,14 +473,14 @@ class DataSyncService:
                 # 元数据补充失败不应影响主流程
 
             if task:
-                task.status = 'completed'
-                task.end_time = datetime.now()
-                task.processed_stocks = total_processed
-                task.saved_records = total_saved
+            task.status = 'completed'
+            task.end_time = datetime.now()
+            task.processed_stocks = total_processed
+            task.saved_records = total_saved
                 task.processed_codes = json.dumps(list(processed_codes_set))
-                db_session.commit()
+            db_session.commit()
 
-                return task.total_stocks, total_processed, task.total_records, total_saved
+            return task.total_stocks, total_processed, task.total_records, total_saved
             else:
                 # 没有任务时直接返回结果
                 db_session.commit()
@@ -470,10 +488,10 @@ class DataSyncService:
 
         except Exception as e:
             if task:
-                task.status = 'failed'
-                task.end_time = datetime.now()
-                task.error_message = str(e)
-                db_session.commit()
+            task.status = 'failed'
+            task.end_time = datetime.now()
+            task.error_message = str(e)
+            db_session.commit()
             raise e
         finally:
             self.logout()

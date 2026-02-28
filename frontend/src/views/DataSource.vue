@@ -1,11 +1,11 @@
 <template>
   <div class="data-manage">
-    <div class="page-header">
-      <h2>数据管理</h2>
-    </div>
-    
-    <!-- 数据统计 -->
-    <el-row :gutter="20" class="stats-row">
+        <div class="page-header">
+          <h2>数据管理</h2>
+        </div>
+        
+        <!-- 数据统计 -->
+        <el-row :gutter="20" class="stats-row">
           <el-col :span="6">
             <el-card shadow="hover">
               <div class="stat-item">

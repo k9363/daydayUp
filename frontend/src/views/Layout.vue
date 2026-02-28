@@ -61,11 +61,6 @@
             <span>交割单列表</span>
           </el-menu-item>
         </el-sub-menu>
-        
-        <el-menu-item index="/datasource">
-          <el-icon><Setting /></el-icon>
-          <span>系统设置</span>
-        </el-menu-item>
       </el-menu>
     </el-aside>
     

@@ -1334,26 +1334,26 @@ class EastMoneyService:
                     logger.info(f"✅ 找到股票: {stock_code} - {stock.stock_name}")
                     
                     # 更新可用的字段 - AKShare返回的字段名是中文简体
-                    update_fields = {
-                        'company_name': info_dict.get('公司名称'),
+                        update_fields = {
+                            'company_name': info_dict.get('公司名称'),
                         'industry': info_dict.get('所属行业') or info_dict.get('行业'),
                         'area': info_dict.get('所在地区') or info_dict.get('地区'),
                         'total_shares': self._parse_number(info_dict.get('总股本(股)')) or self._parse_number(info_dict.get('总股本')),
                         'circulate_shares': self._parse_number(info_dict.get('流通股本(股)')) or self._parse_number(info_dict.get('流通股本')),
                         'total_market_value': self._parse_number(info_dict.get('总市值')),
                         'circulate_market_value': self._parse_number(info_dict.get('流通市值')),
-                        'list_date': info_dict.get('上市日期'),
-                        'is_hs': 1 if info_dict.get('沪深港通') == '是' else 0,
-                    }
-                    
-                    # 调试：打印将要更新的字段
-                    updateable = {k: v for k, v in update_fields.items() if v is not None}
-                    logger.info(f"📝 {stock_code} 准备更新的字段: {updateable}")
-                    
-                    for field, value in update_fields.items():
-                        if value is not None:
-                            setattr(stock, field, value)
-                    
+                            'list_date': info_dict.get('上市日期'),
+                            'is_hs': 1 if info_dict.get('沪深港通') == '是' else 0,
+                        }
+                        
+                        # 调试：打印将要更新的字段
+                        updateable = {k: v for k, v in update_fields.items() if v is not None}
+                        logger.info(f"📝 {stock_code} 准备更新的字段: {updateable}")
+                        
+                        for field, value in update_fields.items():
+                            if value is not None:
+                                setattr(stock, field, value)
+                        
                     from datetime import datetime
                     stock.update_time = datetime.now()
                     

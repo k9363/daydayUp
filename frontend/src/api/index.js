@@ -280,3 +280,43 @@ export function getDeliverySummary(stockCode) {
 export function updateDeliveryReviewNote(deliveryId, reviewNote) {
   return request.put(`/metadata/delivery/${deliveryId}/review-note`, { review_note: reviewNote })
 }
+
+// 获取所有标签
+export function getTags() {
+  return request.get('/tag/list')
+}
+
+// 新增标签
+export function addTag(data) {
+  return request.post('/tag/add', data)
+}
+
+// 更新标签
+export function updateTag(tagId, data) {
+  return request.put(`/tag/update/${tagId}`, data)
+}
+
+// 删除标签
+export function deleteTag(tagId) {
+  return request.delete(`/tag/delete/${tagId}`)
+}
+
+// 获取股票的所有标签
+export function getStockTags(stockCode) {
+  return request.get(`/tag/stock/${stockCode}`)
+}
+
+// 为股票添加标签
+export function addStockTag(stockCode, tagId) {
+  return request.post('/tag/stock/add', { stock_code: stockCode, tag_id: tagId })
+}
+
+// 移除股票的标签
+export function removeStockTag(stockCode, tagId) {
+  return request.post('/tag/stock/remove', { stock_code: stockCode, tag_id: tagId })
+}
+
+// 批量获取股票的标签
+export function getBatchStockTags(stockCodes) {
+  return request.post('/tag/batch/stock/tags', { stock_codes: stockCodes })
+}

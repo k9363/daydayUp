@@ -119,7 +119,7 @@
               clearable
               size="small"
               style="width: 150px"
-              @keyup.enter="loadStocks"
+              @input="handleStockSearch"
               @clear="loadStocks"
             >
               <template #prefix>
@@ -183,6 +183,26 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="标签" min-width="150">
+          <template #default="{ row }">
+            <div v-if="stockTags[row.stock_code] && stockTags[row.stock_code].length > 0">
+              <el-tag
+                v-for="tag in stockTags[row.stock_code].slice(0, 3)"
+                :key="tag.id"
+                :color="tag.color"
+                :style="{ color: getTagTextColor(tag.color) }"
+                size="small"
+                class="tag-item"
+              >
+                {{ tag.name }}
+              </el-tag>
+              <el-tag v-if="stockTags[row.stock_code].length > 3" type="info" size="small">
+                +{{ stockTags[row.stock_code].length - 3 }}
+              </el-tag>
+            </div>
+            <span v-else class="no-tag">无</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button
@@ -209,6 +229,14 @@
               @click="openSectorDialog(row)"
             >
               选择板块
+            </el-button>
+            <el-button
+              type="warning"
+              link
+              size="small"
+              @click="openTagDialog(row)"
+            >
+              管理标签
             </el-button>
           </template>
         </el-table-column>
@@ -444,6 +472,49 @@
       </div>
     </el-dialog>
 
+    <!-- 标签管理弹窗 -->
+    <el-dialog
+      v-model="showTagDialog"
+      :title="'管理标签 - ' + (currentStock ? currentStock.stock_code + ' ' + currentStock.stock_name : '')"
+      width="700px"
+    >
+      <!-- 标签列表 -->
+      <div class="tag-management">
+        <div class="section-title">选择标签：</div>
+        <div class="tag-list">
+          <el-tag
+            v-for="tag in allTags"
+            :key="tag.id"
+            :color="tag.color"
+            :style="{ color: getTagTextColor(tag.color) }"
+            :effect="stockTags[currentStock?.stock_code]?.some(t => t.id === tag.id) ? 'dark' : 'plain'"
+            class="selectable-tag"
+            @click="toggleStockTag(tag)"
+          >
+            {{ tag.name }}
+          </el-tag>
+        </div>
+        
+        <el-divider />
+        
+        <!-- 创建新标签 -->
+        <div class="create-tag">
+          <div class="section-title">创建新标签：</div>
+          <el-form :inline="true" :model="newTagForm">
+            <el-form-item label="标签名称">
+              <el-input v-model="newTagForm.name" placeholder="请输入标签名称" style="width: 150px" />
+            </el-form-item>
+            <el-form-item label="标签颜色">
+              <el-color-picker v-model="newTagForm.color" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" @click="handleCreateTag">创建</el-button>
+            </el-form-item>
+          </el-form>
+        </div>
+      </div>
+    </el-dialog>
+
     <!-- 创建板块弹窗 -->
     <el-dialog
       v-model="showCreateSectorDialog"
@@ -560,7 +631,12 @@ import {
   importDelivery,
   getDeliveryList,
   getDeliveryStats,
-  getStockKline
+  getStockKline,
+  getTags,
+  getStockTags,
+  addStockTag,
+  removeStockTag,
+  getBatchStockTags
 } from '@/api'
 
 // 统计数据
@@ -599,6 +675,18 @@ const stockCurrentPage = ref(1)
 const stockPageSize = ref(50)
 const stockTypeFilter = ref('')  // 股票类型过滤: '', 'stock', 'index', 'etf'
 const stockSearch = ref('')  // 股票搜索
+let stockSearchTimer = null  // 搜索防抖定时器
+
+// 搜索防抖处理
+const handleStockSearch = () => {
+  if (stockSearchTimer) {
+    clearTimeout(stockSearchTimer)
+  }
+  stockSearchTimer = setTimeout(() => {
+    stockCurrentPage.value = 1  // 搜索时重置到第一页
+    loadStocks()
+  }, 300)  // 300ms 防抖
+}
 
 // 交割单相关
 const uploadRef = ref(null)
@@ -663,6 +751,15 @@ const selectedSectorId = ref('')
 const currentStock = ref(null)
 const showSectorDialog = ref(false)
 const sectorDialogLoading = ref(false)
+
+// 标签管理
+const showTagDialog = ref(false)
+const allTags = ref([])
+const stockTags = ref({})  // { stock_code: [tag1, tag2, ...] }
+const newTagForm = ref({
+  name: '',
+  color: '#409EFF'
+})
 
 // 创建板块弹窗
 const showCreateSectorDialog = ref(false)
@@ -860,9 +957,11 @@ const handleStockSizeChange = (size) => {
 
 // 加载股票列表（分页）
 const loadStocks = async () => {
+  console.log('loadStocks called, search:', stockSearch.value, 'type:', stockTypeFilter.value)
   stockListLoading.value = true
   try {
     const res = await getStocks(stockTypeFilter.value, stockSearch.value)
+    console.log('loadStocks response, count:', res.data?.length || 0)
     if (res.code === 200) {
       const allStocks = res.data || []
       stockTotal.value = allStocks.length
@@ -870,12 +969,130 @@ const loadStocks = async () => {
       const start = (stockCurrentPage.value - 1) * stockPageSize.value
       const end = start + stockPageSize.value
       stockList.value = allStocks.slice(start, end)
+      
+      // 加载所有股票的标签
+      await loadBatchStockTags(allStocks.map(s => s.stock_code))
     }
   } catch (error) {
     console.error('获取股票列表失败:', error)
   } finally {
     stockListLoading.value = false
   }
+}
+
+// 加载所有标签
+const loadAllTags = async () => {
+  try {
+    const res = await getTags()
+    if (res.code === 200) {
+      allTags.value = res.data || []
+      console.log('loadAllTags result:', allTags.value)
+    }
+  } catch (error) {
+    console.error('获取标签列表失败:', error)
+  }
+}
+
+// 批量加载股票标签
+const loadBatchStockTags = async (stockCodes) => {
+  if (!stockCodes || stockCodes.length === 0) return
+  console.log('loadBatchStockTags called with:', stockCodes.length, 'stocks, first 5:', stockCodes.slice(0, 5))
+  try {
+    const res = await getBatchStockTags(stockCodes)
+    console.log('loadBatchStockTags response code:', res.code, 'data:', res.data)
+    if (res.code === 200) {
+      stockTags.value = res.data || {}
+      console.log('stockTags updated, keys:', Object.keys(stockTags.value))
+      // 检查北方稀土
+      if (stockTags.value['sh.600111']) {
+        console.log('北方稀土标签:', stockTags.value['sh.600111'])
+      }
+    } else {
+      console.error('loadBatchStockTags failed:', res)
+    }
+  } catch (error) {
+    console.error('获取股票标签失败:', error)
+  }
+}
+
+// 打开标签管理弹窗
+const openTagDialog = async (stock) => {
+  console.log('openTagDialog called, stock:', stock.stock_code, stock.stock_name)
+  currentStock.value = stock
+  showTagDialog.value = true
+  // 加载所有标签
+  await loadAllTags()
+  console.log('allTags loaded:', allTags.value.length)
+  // 加载当前股票的标签
+  await loadStockTags(stock.stock_code)
+  console.log('stockTags for', stock.stock_code, ':', stockTags.value[stock.stock_code])
+}
+
+// 加载单个股票标签
+const loadStockTags = async (stockCode) => {
+  try {
+    const res = await getStockTags(stockCode)
+    if (res.code === 200) {
+      stockTags.value[stockCode] = res.data || []
+    }
+  } catch (error) {
+    console.error('获取股票标签失败:', error)
+  }
+}
+
+// 切换股票的标签
+const toggleStockTag = async (tag) => {
+  if (!currentStock.value) return
+  const stockCode = currentStock.value.stock_code
+  const hasTag = stockTags.value[stockCode]?.some(t => t.id === tag.id)
+  
+  try {
+    if (hasTag) {
+      await removeStockTag(stockCode, tag.id)
+      stockTags.value[stockCode] = stockTags.value[stockCode].filter(t => t.id !== tag.id)
+    } else {
+      await addStockTag(stockCode, tag.id)
+      if (!stockTags.value[stockCode]) {
+        stockTags.value[stockCode] = []
+      }
+      stockTags.value[stockCode].push(tag)
+    }
+  } catch (error) {
+    console.error('更新标签失败:', error)
+  }
+}
+
+// 创建新标签
+const handleCreateTag = async () => {
+  if (!newTagForm.value.name.trim()) {
+    ElMessage.warning('请输入标签名称')
+    return
+  }
+  try {
+    const res = await addTag(newTagForm.value)
+    if (res.code === 200) {
+      ElMessage.success('标签创建成功')
+      await loadAllTags()
+      newTagForm.value.name = ''
+      newTagForm.value.color = '#409EFF'
+    } else {
+      ElMessage.error(res.message || '创建失败')
+    }
+  } catch (error) {
+    console.error('创建标签失败:', error)
+  }
+}
+
+// 计算标签文字颜色（根据背景色判断）
+const getTagTextColor = (color) => {
+  if (!color) return '#fff'
+  // 简单判断：如果是深色返回白色文字，浅色返回黑色文字
+  const hex = color.replace('#', '')
+  const r = parseInt(hex.substr(0, 2), 16)
+  const g = parseInt(hex.substr(2, 2), 16)
+  const b = parseInt(hex.substr(4, 2), 16)
+  const brightness = (r * 299 + g * 587 + b * 114) / 1000
+  return brightness > 128 ? '#000' : '#fff'
 }
 
 // 切换股票类型过滤
@@ -1301,5 +1518,49 @@ onMounted(async () => {
 
 .negative {
   color: #67c23a;
+}
+
+/* 标签管理样式 */
+.tag-management {
+  padding: 10px 0;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.selectable-tag {
+  cursor: pointer;
+  padding: 8px 15px;
+  border-radius: 4px;
+  transition: all 0.3s;
+}
+
+.selectable-tag:hover {
+  transform: scale(1.05);
+}
+
+.tag-item {
+  margin-right: 4px;
+  margin-bottom: 2px;
+}
+
+.no-tag {
+  color: #909399;
+  font-size: 12px;
+}
+
+.create-tag {
+  margin-top: 10px;
+}
+
+.section-title {
+  font-size: 14px;
+  font-weight: bold;
+  margin-bottom: 10px;
+  color: #303133;
 }
 </style>

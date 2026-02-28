@@ -863,7 +863,7 @@ class BaostockService:
             # 2.3 逐只获取日线数据（带重试机制和限流）
             batch_data = []  # 每批数据，用于批量落库
             batch_size = 100  # 每100条落库一次
-            request_interval = 0.5  # 请求间隔 0.5 秒，Baostock免费版限制较严格
+            request_interval = 0.1  # 请求间隔 0.5 秒，Baostock免费版限制较严格
             batch_pause = 2  # 每批后暂停2秒，避免被限流
             max_retries = 5  # 增加重试次数
 
@@ -1347,7 +1347,9 @@ class BaostockService:
         db_stock_name_map = {sb.stock_code: sb.stock_name for sb in stock_basics}
         logger.info(f"从StockBasic表加载了 {len(db_stock_name_map)} 只股票的名称")
 
-        saved_count = 0
+        # 批量插入：使用字典列表而非ORM对象
+        mappings = []
+        
         for row in batch_data:
             # 跳过没有数据的记录
             if not row.get('code') or row.get('close') == '':
@@ -1378,28 +1380,33 @@ class BaostockService:
             if row.get('close') and row.get('preclose'):
                 change = float(row.get('close', 0)) - float(row.get('preclose', 0))
 
-            record = StockDailyKLine(
-                stock_code=code,
-                stock_name=stock_name,
-                trade_date=trade_date,
-                open_price=row.get('open', 0) or None,
-                high_price=row.get('high', 0) or None,
-                low_price=row.get('low', 0) or None,
-                close_price=row.get('close', 0) or None,
-                pre_close_price=row.get('preclose', 0) or None,
-                volume=row.get('volume', 0) or None,
-                turnover=amount,
-                turnover_rate=row.get('turn', 0) or None,
-                change=change,
-                change_percent=row.get('pctChg', 0) or None,
-                industry=info.get('industry', '未知'),
-                market=stock_type
-            )
-            db_session.add(record)
-            saved_count += 1
+            # 构建字典映射（比创建ORM对象更快）
+            mappings.append({
+                'stock_code': code,
+                'stock_name': stock_name,
+                'trade_date': trade_date,
+                'open_price': row.get('open', 0) or None,
+                'high_price': row.get('high', 0) or None,
+                'low_price': row.get('low', 0) or None,
+                'close_price': row.get('close', 0) or None,
+                'pre_close_price': row.get('preclose', 0) or None,
+                'volume': row.get('volume', 0) or None,
+                'turnover': amount,
+                'turnover_rate': row.get('turn', 0) or None,
+                'change': change,
+                'change_percent': row.get('pctChg', 0) or None,
+                'industry': info.get('industry', '未知'),
+                'market': stock_type
+            })
 
-        db_session.commit()
-        return saved_count
+        # 批量插入
+        if mappings:
+            db_session.bulk_insert_mappings(StockDailyKLine, mappings)
+            db_session.commit()
+            logger.info(f"批量插入了 {len(mappings)} 条K线数据")
+            return len(mappings)
+        
+        return 0
 
     def _save_daily_kline_batch(self, db_session, batch_data, stock_name_map, trade_date):
         """
@@ -1421,8 +1428,8 @@ class BaostockService:
         stock_basics = db_session.query(StockBasic.stock_code, StockBasic.stock_name).all()
         db_stock_name_map = {sb.stock_code: sb.stock_name for sb in stock_basics}
 
-        saved_count = 0
-        records_to_insert = []
+        # 批量插入：使用字典列表而非ORM对象
+        mappings = []
 
         for row in batch_data:
             if not row.get('code') or row.get('close') == '':
@@ -1446,40 +1453,34 @@ class BaostockService:
             except:
                 pass
 
-            # 创建记录
-            record = StockDailyKLine(
-                stock_code=code,
-                stock_name=stock_name,
-                trade_date=trade_date,
-                open_price=float(row.get('open', 0) or 0),
-                high_price=float(row.get('high', 0) or 0),
-                low_price=float(row.get('low', 0) or 0),
-                close_price=float(row.get('close', 0) or 0),
-                pre_close_price=float(row.get('preclose', 0) or 0),
-                volume=float(row.get('volume', 0) or 0),
-                turnover=amount,
-                change_percent=float(row.get('pctChg', 0) or 0),
-                change=change
-            )
-            records_to_insert.append(record)
+            # 构建字典映射
+            mappings.append({
+                'stock_code': code,
+                'stock_name': stock_name,
+                'trade_date': trade_date,
+                'open_price': float(row.get('open', 0) or 0),
+                'high_price': float(row.get('high', 0) or 0),
+                'low_price': float(row.get('low', 0) or 0),
+                'close_price': float(row.get('close', 0) or 0),
+                'pre_close_price': float(row.get('preclose', 0) or 0),
+                'volume': float(row.get('volume', 0) or 0),
+                'turnover': amount,
+                'change_percent': float(row.get('pctChg', 0) or 0),
+                'change': change
+            })
 
         # 批量插入
-        if records_to_insert:
+        if mappings:
             try:
-                db_session.bulk_save_objects(records_to_insert)
+                db_session.bulk_insert_mappings(StockDailyKLine, mappings)
                 db_session.commit()
-                saved_count = len(records_to_insert)
+                logger.info(f"批量插入了 {len(mappings)} 条K线数据")
+                return len(mappings)
             except Exception as e:
                 db_session.rollback()
                 logger.error(f"批量保存K线数据失败: {e}")
-                # 尝试逐条保存
-                for record in records_to_insert:
-                    try:
-                        db_session.add(record)
-                        db_session.commit()
-                        saved_count += 1
-                    except:
-                        db_session.rollback()
+        
+        return 0
 
         return saved_count
 

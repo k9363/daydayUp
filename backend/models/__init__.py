@@ -16,6 +16,7 @@ from models.kline import (
     DataSyncTask
 )
 from models.delivery import StockDelivery
+from models.tag import StockTag, StockTagRelation
 
 
 def init_db(app):

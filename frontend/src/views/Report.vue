@@ -1,18 +1,18 @@
 <template>
   <div class="report">
-    <div class="page-header">
-      <el-page-header @back="$router.back()">
-        <template #content>
-          <span class="page-title">分析报告</span>
-        </template>
-        <template #extra>
-          <el-button @click="exportReport">
-            <el-icon><Download /></el-icon>
-            导出报告
-          </el-button>
-        </template>
-      </el-page-header>
-    </div>
+        <div class="page-header">
+          <el-page-header @back="$router.back()">
+            <template #content>
+              <span class="page-title">分析报告</span>
+            </template>
+            <template #extra>
+              <el-button @click="exportReport">
+                <el-icon><Download /></el-icon>
+                导出报告
+              </el-button>
+            </template>
+          </el-page-header>
+        </div>
         
         <!-- 加载状态 -->
         <div v-if="loading" class="loading-container">
