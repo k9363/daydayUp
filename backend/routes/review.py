@@ -210,6 +210,7 @@ def create_baostock_task():
         review_type = data.get('review_type', 'daily')
         dimensions = data.get('dimensions', [])
         rules = data.get('rules', [])
+        stock_filter = data.get('stock_filter', None)  # 股票筛选条件，如 {"type": "top_by_amount", "value": 100}
         overwrite = data.get('overwrite', False)  # 是否覆盖
         
         # 验证日期
@@ -250,6 +251,7 @@ def create_baostock_task():
             review_type=review_type,
             dimensions=dimensions,
             rules=rules,
+            stock_filter=stock_filter,
             data_source_type='baostock',
             data_source_name=f"Baostock A股数据 {trade_date}",
             data_source_desc=f"获取{trade_date}日全A股市场股票列表"
@@ -369,6 +371,41 @@ def task_chart_data(task_id):
                         chart_data['sectors'] = []
                 except:
                     pass
+            
+            # 处理因子体系数据（因子树）
+            elif result.dimension == '因子体系' and result.detail_data:
+                try:
+                    factor_tree_data = json.loads(result.detail_data)
+                    chart_data['factorTree'] = factor_tree_data
+                except:
+                    pass
+            
+            # 处理市场/大盘指数数据
+            elif result.dimension == '市场':
+                try:
+                    # 检查是否有 detail_data（树状结构）
+                    if result.detail_data:
+                        detail = json.loads(result.detail_data)
+                        if detail.get('type') == 'market_overview':
+                            # 新的树状结构
+                            chart_data['marketDetail'] = detail
+                            chart_data['market'] = {
+                                '大盘综合得分': result.metric_value,
+                                # 从 factors 中提取
+                                **{name: info.get('value', 0) for name, info in detail.get('factors', {}).items()}
+                            }
+                        else:
+                            # 旧的扁平结构
+                            if 'market' not in chart_data:
+                                chart_data['market'] = {}
+                            chart_data['market'][result.metric_name] = result.metric_value
+                    else:
+                        # 没有 detail_data，使用旧的扁平结构
+                        if 'market' not in chart_data:
+                            chart_data['market'] = {}
+                        chart_data['market'][result.metric_name] = result.metric_value
+                except:
+                    pass
         
         # 如果有 top100Detail，更新 Top10 图表（数据已除以10000）
         if chart_data.get('top100Detail') and isinstance(chart_data['top100Detail'], list):
@@ -394,6 +431,62 @@ def task_chart_data(task_id):
         chart_data['summary'].setdefault('totalAmount', 0)
         chart_data['summary'].setdefault('avgAmount', 0)
         
+        # ========== 获取因子定义信息 ==========
+        try:
+            from models.factor import FactorDefine
+            from models.expression import ScoreExpression
+            
+            # 获取默认表达式
+            default_expr = ScoreExpression.query.filter(
+                ScoreExpression.scope == 'stock',
+                ScoreExpression.is_default == True,
+                ScoreExpression.is_active == True
+            ).first()
+            
+            # 从表达式中提取使用的因子代码
+            factor_codes_in_expr = []
+            if default_expr and default_expr.factors:
+                factor_codes_in_expr = default_expr.factors
+            elif default_expr and default_expr.expression:
+                import re
+                # 从表达式中提取因子代码
+                var_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
+                exclude_funcs = {'ABS', 'SQRT', 'MAX', 'MIN', 'AVG', 'SUM', 'ROUND', 'POW', 'IF', 'LOG', 
+                               'abs', 'sqrt', 'max', 'min', 'avg', 'sum', 'round', 'pow', 'if', 'log'}
+                matches = re.findall(var_pattern, default_expr.expression)
+                factor_codes_in_expr = [m for m in matches if m not in exclude_funcs]
+            
+            # 只获取表达式中使用的因子定义
+            if factor_codes_in_expr:
+                stock_factors = FactorDefine.query.filter(
+                    FactorDefine.factor_scope == 'stock',
+                    FactorDefine.is_active == True,
+                    FactorDefine.factor_code.in_(factor_codes_in_expr)
+                ).order_by(FactorDefine.factor_code).all()
+            else:
+                stock_factors = []
+            
+            factor_columns = [{
+                'code': f.factor_code,
+                'name': f.factor_name,
+                'source': f.source
+            } for f in stock_factors]
+            
+            chart_data['factorConfig'] = {
+                'columns': factor_columns,
+                'expression': default_expr.expression if default_expr else '',
+                'expressionName': default_expr.expression_name if default_expr else ''
+            }
+        except Exception as e:
+            import traceback
+            logger.warning(f"获取因子配置信息失败: {e}")
+            logger.warning(traceback.format_exc())
+            chart_data['factorConfig'] = {
+                'columns': [],
+                'expression': '',
+                'expressionName': ''
+            }
+        
         return jsonify({
             'code': 200,
             'message': '操作成功',
@@ -409,7 +502,7 @@ def task_chart_data(task_id):
 
 @review_bp.route('/dashboard', methods=['GET'])
 def get_dashboard_data():
-    """获取首页仪表盘数据 - 近10个交易日的板块前10和因子得分Top10"""
+    """获取首页仪表盘数据 - 近10个交易日的板块前10、因子得分Top10和趋势图表"""
     try:
         import json
         from models.reviewtask import ReviewTask
@@ -428,7 +521,9 @@ def get_dashboard_data():
                 'taskName': task.task_name,
                 'tradeDate': task.trade_date,
                 'sectors': [],  # 板块前10
-                'factorStocks': []  # 因子得分Top10
+                'factorStocks': [],  # 因子得分Top10
+                'marketScore': None,  # 大盘综合得分
+                'topStockScore': None  # 因子Top10股票得分
             }
             
             # 获取板块得分数据
@@ -463,7 +558,7 @@ def get_dashboard_data():
                     factor_data = json.loads(factor_result.detail_data)
                     factor_stocks = factor_data.get('stocks', [])
                     # 取前10只股票
-                    task_info['factorStocks'] = [
+                    top_stocks = [
                         {
                             'code': s.get('code', ''),
                             'name': s.get('name', ''),
@@ -471,6 +566,24 @@ def get_dashboard_data():
                         }
                         for s in factor_stocks[:10]
                     ]
+                    task_info['factorStocks'] = top_stocks
+                    # Top10股票得分列表（按名次排序）
+                    task_info['topStockScores'] = [s.get('totalScore', 0) for s in top_stocks]
+                    # 每只股票对应的名次
+                    task_info['stockRanks'] = [{'name': s.get('name', ''), 'rank': idx + 1} for idx, s in enumerate(top_stocks)]
+                except:
+                    pass
+            
+            # 获取大盘综合得分
+            market_result = ReviewResult.query.filter(
+                ReviewResult.task_id == task.id,
+                ReviewResult.dimension == '市场',
+                ReviewResult.metric_name == '大盘综合得分'
+            ).first()
+            
+            if market_result and market_result.metric_value:
+                try:
+                    task_info['marketScore'] = float(market_result.metric_value)
                 except:
                     pass
             

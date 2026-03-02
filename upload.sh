@@ -18,7 +18,7 @@ FRONTEND_DIR="$PROJECT_ROOT/frontend"
 echo ""
 echo ">> 检查服务器目录..."
 # 先在服务器上创建目标目录
-expect -c "
+expect -c "f
 set timeout 30
 spawn ssh -o StrictHostKeyChecking=no $USER@$SERVER \"mkdir -p /home/$USER/daydayup_backend /home/$USER/daydayup_frontend\"
 expect {

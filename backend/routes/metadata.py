@@ -1058,7 +1058,7 @@ def has_letters(text):
     text_upper = str(text).upper()
     for suffix in exclude_suffixes:
         if text_upper.endswith(suffix):
-        return False
+            return False
     return bool(re.search(r'[a-zA-Z]', str(text)))
 
 
@@ -1101,13 +1101,13 @@ def import_delivery():
             rows = parse_excel(file)
         elif filename.endswith('.csv') or filename.endswith('.txt'):
             # 解析CSV/TXT文件
-        content = file.read()
-        try:
-            text = content.decode('gbk')
-        except UnicodeDecodeError:
-            text = content.decode('utf-8', errors='replace')
-        reader = csv.reader(io.StringIO(text), delimiter='\t')
-        rows = list(reader)
+            content = file.read()
+            try:
+                text = content.decode('gbk')
+            except UnicodeDecodeError:
+                text = content.decode('utf-8', errors='replace')
+            reader = csv.reader(io.StringIO(text), delimiter='\t')
+            rows = list(reader)
         else:
             return jsonify({'code': 400, 'message': '不支持的文件格式，请上传 .xls, .xlsx, .csv 或 .txt 文件'}), 400
         

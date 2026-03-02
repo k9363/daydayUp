@@ -35,6 +35,22 @@
               />
             </el-form-item>
             
+            <el-form-item label="股票筛选">
+              <el-select v-model="formData.stockFilterType" style="width: 40%; margin-right: 10px;">
+                <el-option label="成交额前N名" value="top_by_amount" />
+                <el-option label="全部A股" value="all" />
+              </el-select>
+              <el-input-number 
+                v-if="formData.stockFilterType === 'top_by_amount'"
+                v-model="formData.stockFilterValue" 
+                :min="10" 
+                :max="500" 
+                :step="10"
+                style="width: 40%"
+              />
+              <span v-if="formData.stockFilterType === 'top_by_amount'" style="margin-left: 10px;">只</span>
+            </el-form-item>
+            
             <el-form-item class="submit-section">
               <el-button @click="$router.back()">取消</el-button>
               <el-button type="primary" :loading="submitting" @click="handleSubmit">
@@ -62,7 +78,9 @@ const submitting = ref(false)
 // 表单数据
 const formData = reactive({
   taskName: '',
-  tradeDate: ''
+  tradeDate: '',
+  stockFilterType: 'top_by_amount',
+  stockFilterValue: 100
 })
 
 // 自动生成任务名称
@@ -93,10 +111,15 @@ const handleSubmit = async () => {
     submitting.value = true
     
     try {
-    const res = await createBaostockReviewTask({
-      taskName: formData.taskName,
-      tradeDate: formData.tradeDate,
-        reviewType: 'daily'
+      const stockFilter = formData.stockFilterType === 'all' 
+        ? { type: 'all' }
+        : { type: 'top_by_amount', value: formData.stockFilterValue }
+      
+      const res = await createBaostockReviewTask({
+        taskName: formData.taskName,
+        tradeDate: formData.tradeDate,
+        reviewType: 'daily',
+        stockFilter: stockFilter
       })
       
       ElMessage.success('任务已创建')
@@ -117,12 +140,17 @@ const handleSubmit = async () => {
             }
           )
           // 用户选择覆盖，重新创建
+          const stockFilter = formData.stockFilterType === 'all' 
+            ? { type: 'all' }
+            : { type: 'top_by_amount', value: formData.stockFilterValue }
+          
           await createBaostockReviewTask({
             taskName: formData.taskName,
             tradeDate: formData.tradeDate,
             reviewType: 'daily',
-            overwrite: true
-    })
+            overwrite: true,
+            stockFilter: stockFilter
+          })
           ElMessage.success('任务已覆盖重建')
           router.push('/review')
         } catch (confirmError) {

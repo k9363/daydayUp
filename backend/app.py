@@ -11,6 +11,8 @@ from routes.sync import sync_bp
 from routes.metadata import metadata_bp
 from routes.scheduler import scheduler_bp
 from routes.tag import tag_bp
+from routes.factor import factor_bp
+from routes.expression import expression_bp
 
 # 配置根日志：输出到 stderr（gunicorn 会捕获）
 logging.basicConfig(
@@ -46,6 +48,8 @@ def create_app(config_name=None):
     app.register_blueprint(metadata_bp, url_prefix='/api/metadata')
     app.register_blueprint(scheduler_bp, url_prefix='/api/scheduler')
     app.register_blueprint(tag_bp, url_prefix='/api/tag')
+    app.register_blueprint(factor_bp, url_prefix='/api/factor')
+    app.register_blueprint(expression_bp, url_prefix='/api/expression')
     
     # 根路径健康检查
     @app.route('/api/health')

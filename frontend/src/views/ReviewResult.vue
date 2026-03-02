@@ -25,43 +25,73 @@
 
     <!-- 数据内容 -->
     <div v-else-if="chartData" class="content">
-      <!-- 指数行情 -->
-      <el-card shadow="hover" class="index-card" v-if="indexData.length > 0">
+      <!-- 大盘指数 + 主要指数行情 一行展示 -->
+      <el-row :gutter="12" v-if="indexData.length > 0 || Object.keys(marketData).length > 0">
+        <!-- 大盘指数 -->
+        <el-col :span="8" v-if="Object.keys(marketData).length > 0">
+          <el-card shadow="hover" class="market-card">
             <template #header>
-          <span>主要指数行情</span>
-        </template>
-        <el-table :data="indexData" stripe style="width: 100%">
-          <el-table-column prop="name" label="指数名称" width="150" />
-          <el-table-column prop="code" label="指数代码" width="150" />
-          <el-table-column label="收盘价" width="120" align="right">
-            <template #default="{ row }">
-              {{ row.close.toFixed(2) }}
+              <div class="card-header">
+                <span>大盘指数</span>
+                <el-button v-if="marketDetail" type="primary" link @click="showMarketDetailDialog = true">
+                  <el-icon><Grid /></el-icon> 因子详情
+                </el-button>
+              </div>
             </template>
-          </el-table-column>
-          <el-table-column label="涨跌幅" width="120" align="center">
-            <template #default="{ row }">
-              <span :class="row.changePercent >= 0 ? 'positive' : 'negative'">
-                {{ row.changePercent >= 0 ? '+' : '' }}{{ row.changePercent.toFixed(2) }}%
-              </span>
-            </template>
-          </el-table-column>
-          <el-table-column label="成交额(亿)" width="140" align="right">
-            <template #default="{ row }">
-              {{ formatAmount(row.amount || row.turnover || 0) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="成交量(亿)" width="140" align="right">
-            <template #default="{ row }">
-              {{ ((row.volume || 0) / 100000000).toFixed(2) }}
-            </template>
-          </el-table-column>
-        </el-table>
+            
+            <!-- 综合得分 -->
+            <div class="market-score">
+              <div class="score-value">{{ marketData['大盘综合得分'] ? Number(marketData['大盘综合得分']).toFixed(3) : '0.000' }}</div>
+              <div class="score-label">综合得分</div>
+            </div>
           </el-card>
+        </el-col>
+
+        <!-- 主要指数行情 -->
+        <el-col :span="16" v-if="indexData.length > 0">
+          <el-card shadow="hover" class="index-card">
+            <template #header>
+              <span>主要指数行情</span>
+            </template>
+            <el-table :data="indexData" stripe size="small">
+              <el-table-column prop="name" label="指数名称" width="90" />
+              <el-table-column prop="code" label="代码" width="80" />
+              <el-table-column label="收盘价" width="80" align="right">
+                <template #default="{ row }">
+                  {{ row.close.toFixed(2) }}
+                </template>
+              </el-table-column>
+              <el-table-column label="涨跌幅" width="80" align="center">
+                <template #default="{ row }">
+                  <span :class="row.changePercent >= 0 ? 'positive' : 'negative'">
+                    {{ row.changePercent >= 0 ? '+' : '' }}{{ row.changePercent.toFixed(2) }}%
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column label="成交额(亿)" width="90" align="right">
+                <template #default="{ row }">
+                  {{ formatAmount(row.amount || row.turnover || 0) }}
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+        </el-col>
+      </el-row>
 
       <!-- 因子得分排名 Top 10 -->
       <el-card shadow="hover" class="stock-table-card" v-if="top10FactorStocks.length > 0">
         <template #header>
-          <span>因子得分 Top 10 股票</span>
+          <div class="card-header">
+            <span>因子得分 Top 10 股票</span>
+            <el-button 
+              v-if="factorTree && factorTree.factors" 
+              text 
+              @click="showFactorTreeDialog = true"
+            >
+              <el-icon><Grid /></el-icon>
+              因子体系
+            </el-button>
+          </div>
         </template>
         <el-table :data="top10FactorStocks" stripe>
           <el-table-column type="index" label="排名" width="60" align="center" />
@@ -92,72 +122,148 @@
               <span v-else class="no-tag">无</span>
             </template>
           </el-table-column>
-          <el-table-column label="综合得分" width="80" align="center">
+          <el-table-column label="综合得分" width="90" align="center">
             <template #default="{ row }">
-              <el-tag type="success">{{ row.totalScore.toFixed(2) }}</el-tag>
+              <el-tag type="success">{{ (row.totalScore || 0).toFixed(2) }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="成交额权重" width="80" align="center">
+          
+          <!-- 操作列 -->
+          <el-table-column label="操作" width="120" align="center">
             <template #default="{ row }">
-              <el-tooltip :content="`成交额排名: 第${Math.round((10 - row.factor1Rank) / 0.2 + 1)}名`" placement="top">
-                {{ row.factor1Rank.toFixed(1) }}
-              </el-tooltip>
-            </template>
-          </el-table-column>
-          <el-table-column label="短线趋势" width="80" align="center">
-            <template #default="{ row }">
-              <el-tooltip :content="`收盘: ${row.currentPrice || '-'} | MA5: ${row.ma5 || '-'} | MA10: ${row.ma10 || '-'}`" placement="top">
-                <span :class="row.factor2MA >= 0 ? 'positive' : 'negative'">
-                  {{ row.factor2MA >= 0 ? '+' : '' }}{{ row.factor2MA.toFixed(1) }}
-                </span>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-          <el-table-column label="昨日同比" width="80" align="center">
-            <template #default="{ row }">
-              <el-tooltip :content="`今量: ${row.volCurrent ? (row.volCurrent / 10000).toFixed(0) + '万' : '-'} | 昨量: ${row.volPrev ? (row.volPrev / 10000).toFixed(0) + '万' : '-'}`" placement="top">
-                <span :class="row.factor3Vol >= 0 ? 'positive' : 'negative'">
-                  {{ row.factor3Vol >= 0 ? '+' : '' }}{{ row.factor3Vol.toFixed(1) }}
-                </span>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-          <el-table-column label="爆量" width="70" align="center">
-            <template #default="{ row }">
-              <el-tooltip :content="`近3日均: ${row.avg3dTurnover ? (row.avg3dTurnover / 100000000).toFixed(2) + '亿' : '-'} | 前5-20日均: ${row.avg520dTurnover ? (row.avg520dTurnover / 100000000).toFixed(2) + '亿' : '-'}`" placement="top">
-                <span :class="row.factor4Burst >= 0 ? 'positive' : 'negative'">
-                  {{ row.factor4Burst >= 0 ? '+' : '' }}{{ row.factor4Burst.toFixed(1) }}
-                </span>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-          <el-table-column label="极限量" width="70" align="center">
-            <template #default="{ row }">
-              <el-tooltip :content="`近10日均: ${row.avg10dTurnover ? (row.avg10dTurnover / 100000000).toFixed(2) + '亿' : '-'} | 前11-30日均: ${row.avg1130dTurnover ? (row.avg1130dTurnover / 100000000).toFixed(2) + '亿' : '-'}`" placement="top">
-                <span :class="row.factor5Extreme >= 0 ? 'positive' : 'negative'">
-                  {{ row.factor5Extreme >= 0 ? '+' : '' }}{{ row.factor5Extreme.toFixed(1) }}
-                </span>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-          <el-table-column label="多头趋势" width="80" align="center">
-            <template #default="{ row }">
-              <el-tooltip :content="`15日MA5: ${row.ma5_15d || '-'} | 15日MA10: ${row.ma10_15d || '-'}`" placement="top">
-                <span :class="row.factor6Trend >= 0 ? 'positive' : 'negative'">
-                  {{ row.factor6Trend >= 0 ? '+' : '' }}{{ row.factor6Trend.toFixed(2) }}
-                </span>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="100" align="center">
-            <template #default="{ row }">
+              <el-button type="primary" link size="small" @click="showStockFactorTree(row)">
+                因子详情
+              </el-button>
               <el-button type="warning" link size="small" @click="openTagDialog(row)">
-                管理标签
+                标签
               </el-button>
             </template>
           </el-table-column>
         </el-table>
       </el-card>
+
+      <!-- 因子树详情对话框 - 树形结构展示 -->
+      <el-dialog 
+        v-model="showFactorTreeDialog" 
+        :title="currentStock ? `${currentStock.name} (${currentStock.code}) 因子得分详情` : '因子体系'"
+        width="900px"
+        destroy-on-close
+      >
+        <div v-if="factorTree && factorTree.factors" class="factor-tree-dialog">
+          <!-- 综合得分展示 -->
+          <div class="total-score" v-if="currentStock">
+            <span class="score-label">综合得分</span>
+            <span class="score-value">{{ (currentStock.totalScore || 0).toFixed(2) }}</span>
+          </div>
+          
+          <!-- 树形结构 -->
+          <div class="tree-visualization">
+            <el-tree
+              :data="stockFactorTreeData"
+              :props="treeVisualProps"
+              default-expand-all
+              node-key="id"
+              class="factor-visual-tree"
+            >
+              <template #default="{ node, data }">
+                <div class="visual-node" :class="[data.levelClass, { 'has-value': data.value !== undefined }]">
+                  <!-- 节点图标 -->
+                  <span class="node-icon">
+                    <el-icon v-if="data.level === 1"><Monitor /></el-icon>
+                    <el-icon v-else-if="data.level === 2"><Connection /></el-icon>
+                    <el-icon v-else-if="data.level === 3"><Trophy /></el-icon>
+                  </span>
+                  
+                  <!-- 节点内容 -->
+                  <span class="node-content">
+                    <span class="node-label">{{ data.name }}</span>
+                    <span class="node-code">({{ data.code }})</span>
+                  </span>
+                  
+                  <!-- 节点值 -->
+                  <span v-if="data.value !== undefined" class="node-value" :class="data.value >= 0 ? 'positive' : 'negative'">
+                    {{ data.value >= 0 ? '+' : '' }}{{ data.value.toFixed(2) }}
+                  </span>
+                  
+                  <!-- 公式 -->
+                  <span v-if="data.expression" class="node-formula">{{ data.expression }}</span>
+                  
+                  <!-- 连接线说明 -->
+                  <span v-if="data.isDependency" class="dep-arrow">←</span>
+                </div>
+              </template>
+            </el-tree>
+          </div>
+          
+          <!-- 图例说明 -->
+          <div class="tree-legend">
+            <span class="legend-item"><el-icon><Monitor /></el-icon> 数据源</span>
+            <span class="legend-item"><el-icon><Connection /></el-icon> 中间因子</span>
+            <span class="legend-item"><el-icon><Trophy /></el-icon> 综合得分</span>
+          </div>
+        </div>
+        <template #footer>
+          <el-button @click="showFactorTreeDialog = false">关闭</el-button>
+        </template>
+      </el-dialog>
+
+      <!-- 大盘指数详情弹窗 - 与股票保持一致的树形结构 -->
+      <el-dialog
+        v-model="showMarketDetailDialog"
+        title="大盘指数详情"
+        width="900px"
+        destroy-on-close
+      >
+        <div v-if="marketDetail" class="factor-tree-dialog">
+          <!-- 综合得分展示 -->
+          <div class="total-score">
+            <span class="score-label">大盘综合得分</span>
+            <span class="score-value">{{ marketData['大盘综合得分'] || 0 }}</span>
+          </div>
+          
+          <!-- 树形结构 -->
+          <div class="tree-visualization">
+            <el-tree
+              :data="marketFactorTreeData"
+              :props="treeVisualProps"
+              default-expand-all
+              node-key="id"
+              class="factor-visual-tree"
+            >
+              <template #default="{ node, data }">
+                <div class="visual-node" :class="[data.levelClass, { 'has-value': data.value !== undefined }]">
+                  <!-- 节点图标 -->
+                  <span class="node-icon">
+                    <el-icon v-if="data.level === 1"><Monitor /></el-icon>
+                    <el-icon v-else-if="data.level === 2"><Connection /></el-icon>
+                    <el-icon v-else-if="data.level === 3"><Trophy /></el-icon>
+                  </span>
+                  
+                  <!-- 节点内容 -->
+                  <span class="node-content">
+                    <span class="node-label">{{ data.name }}</span>
+                    <span class="node-code" v-if="data.code">({{ data.code }})</span>
+                  </span>
+                  
+                  <!-- 节点值 -->
+                  <span v-if="data.value !== undefined" class="node-value" :class="data.value >= 0 ? 'positive' : 'negative'">
+                    {{ typeof data.value === 'number' ? (data.value >= 0 ? '+' : '') + data.value.toFixed(2) : data.value }}
+                  </span>
+                  
+                  <!-- 公式 -->
+                  <span v-if="data.expression" class="node-formula">{{ data.expression }}</span>
+                  
+                  <!-- 连接线说明 -->
+                  <span v-if="data.isDependency" class="dep-arrow">←</span>
+                </div>
+              </template>
+            </el-tree>
+          </div>
+        </div>
+        <template #footer>
+          <el-button @click="showMarketDetailDialog = false">关闭</el-button>
+        </template>
+      </el-dialog>
 
       <!-- 板块详情表格 -->
       <el-card shadow="hover" class="sector-table-card">
@@ -290,7 +396,7 @@
 <script setup>
 import { ref, onMounted, computed, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh } from '@element-plus/icons-vue'
+import { Refresh, Grid, Monitor, Connection, Trophy } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
 import { getSectorStocks, getTags, addTag, addStockTag, removeStockTag, getBatchStockTags } from '@/api'
@@ -303,6 +409,13 @@ const taskId = route.params.id
 const loading = ref(true)
 const error = ref(null)
 const chartData = ref(null)
+const activeFactorTab = ref('1')
+const showFactorTreeDialog = ref(false)
+const currentStock = ref(null)
+
+// 大盘指数详情弹窗
+const showMarketDetailDialog = ref(false)
+
 const pieChartRef = ref(null)
 const barChartRef = ref(null)
 const top10ChartRef = ref(null)
@@ -333,6 +446,203 @@ const sectors = computed(() => chartData.value?.sectors || [])
 const top100Detail = computed(() => chartData.value?.top100Detail || [])
 const top10FactorStocks = computed(() => chartData.value?.top10FactorStocks || [])
 const indexData = computed(() => chartData.value?.indexData || [])
+
+// 大盘/市场数据
+const marketData = computed(() => chartData.value?.market || {})
+
+// 大盘指数详情（树状结构）
+const marketDetail = computed(() => chartData.value?.marketDetail || null)
+
+// 转换为表格数据
+const marketIndexTableData = computed(() => {
+  if (!marketDetail.value?.indexPrices) return []
+  return Object.entries(marketDetail.value.indexPrices).map(([code, info]) => ({
+    code,
+    ...info
+  }))
+})
+
+// 大盘因子树数据 - 与股票保持一致的树形结构
+const marketFactorTreeData = computed(() => {
+  if (!marketDetail.value || !marketDetail.value.factors) return []
+  
+  const factors = marketDetail.value.factors
+  const result = []
+  
+  // 根节点：大盘综合得分
+  const marketScore = factors['大盘综合得分']
+  if (marketScore) {
+    const scoreNode = {
+      id: 'market-score',
+      name: '大盘综合得分',
+      code: 'market_score',
+      value: marketScore.value,
+      expression: '',
+      level: 3,
+      levelClass: 'level-3',
+      children: []
+    }
+    
+    // 第二层：各分项因子
+    const subFactors = [
+      { name: '涨跌比', code: 'up_down_ratio', deps: [] },
+      { name: '成交额前50涨跌比', code: 'up_down_ratio_top50', deps: [] },
+      { name: '指数总成交额', code: 'total_turnover', deps: ['sh_turnover', 'sz_turnover'] },
+      { name: '昨日总成交额', code: 'total_turnover_y1', deps: ['sh_turnover_y1', 'sz_turnover_y1'] },
+      { name: '成交额增速', code: 'turnover_growth', deps: ['total_turnover', 'total_turnover_y1'] },
+      { name: '5日线多头得分', code: 'ma5_trend_score', deps: [] },
+      { name: '10日线多头得分', code: 'ma10_trend_score', deps: [] }
+    ]
+    
+    for (const sf of subFactors) {
+      const factorInfo = factors[sf.name]
+      if (factorInfo) {
+        const depNode = {
+          id: `market-${sf.code}`,
+          name: sf.name,
+          code: sf.code,
+          value: factorInfo.value,
+          expression: factorInfo.expression,
+          level: 2,
+          levelClass: 'level-2',
+          children: []
+        }
+        
+        // 第一层：依赖的数据源（如有）
+        for (const dep of sf.deps) {
+          const depFactor = factors[`${dep === 'sh_turnover' ? '上证成交额' : dep === 'sz_turnover' ? '深证成交额' : dep === 'sh_turnover_y1' ? '上证昨日成交额' : dep === 'sz_turnover_y1' ? '深证昨日成交额' : dep}`]
+          if (depFactor) {
+            depNode.children.push({
+              id: `market-${sf.code}-${dep}`,
+              name: depFactor.expression || dep,
+              code: dep,
+              value: depFactor.value,
+              level: 1,
+              levelClass: 'level-1',
+              isDependency: true
+            })
+          }
+        }
+        
+        scoreNode.children.push(depNode)
+      }
+    }
+    
+    result.push(scoreNode)
+  }
+  
+  return result
+})
+
+// 动态因子配置
+const factorConfig = computed(() => chartData.value?.factorConfig || { columns: [], expression: '', expressionName: '' })
+
+// 因子树数据
+const factorTree = computed(() => chartData.value?.factorTree || null)
+
+// 树形组件属性
+const treeProps = {
+  children: 'children',
+  label: 'name'
+}
+
+// 树形可视化属性
+const treeVisualProps = {
+  children: 'children',
+  label: 'name'
+}
+
+// 股票因子树数据 - 真正的树形结构（得分因子 -> 中间因子 -> 数据源）
+const stockFactorTreeData = computed(() => {
+  if (!factorTree.value || !factorTree.value.factors || !currentStock.value) return []
+  
+  const stock = currentStock.value
+  const levels = factorTree.value.factors
+  
+  // 构建代码到因子信息的映射
+  const factorMap = {}
+  for (const level of levels) {
+    for (const f of level.factors) {
+      factorMap[f.code] = {
+        ...f,
+        level: level.level,
+        levelName: level.levelName
+      }
+    }
+  }
+  
+  // 获取因子值
+  const getValue = (code) => {
+    const val = stock[code]
+    return val !== undefined && val !== null ? parseFloat(val) : undefined
+  }
+  
+  // 第三层：综合得分因子
+  const scoreFactors = levels.find(l => l.level === 3)?.factors || []
+  const result = []
+  
+  for (const sf of scoreFactors) {
+    const scoreNode = {
+      id: `score-${sf.code}`,
+      name: sf.name,
+      code: sf.code,
+      value: getValue(sf.code),
+      expression: sf.expression,
+      level: 3,
+      levelClass: 'level-3',
+      children: []
+    }
+    
+    // 第二层：中间计算因子
+    if (sf.dependencies) {
+      for (const dep of sf.dependencies) {
+        const depFactor = factorMap[dep]
+        if (depFactor) {
+          const depNode = {
+            id: `dep-${sf.code}-${dep}`,
+            name: depFactor.name,
+            code: depFactor.code,
+            value: getValue(depFactor.code),
+            expression: depFactor.expression,
+            level: 2,
+            levelClass: 'level-2',
+            children: []
+          }
+          
+          // 第一层：数据源
+          if (depFactor.dependencies) {
+            for (const source of depFactor.dependencies) {
+              const sourceFactor = factorMap[source]
+              if (sourceFactor) {
+                depNode.children.push({
+                  id: `source-${dep}-${source}`,
+                  name: sourceFactor.name,
+                  code: sourceFactor.code,
+                  value: getValue(sourceFactor.code),
+                  level: 1,
+                  levelClass: 'level-1',
+                  isDependency: true
+                })
+              }
+            }
+          }
+          
+          scoreNode.children.push(depNode)
+        }
+      }
+    }
+    
+    result.push(scoreNode)
+  }
+  
+  return result
+})
+
+// 显示股票因子树
+const showStockFactorTree = (row) => {
+  currentStock.value = row
+  showFactorTreeDialog.value = true
+}
 
 // 返回上一页
 const goBack = () => {
@@ -792,8 +1102,15 @@ watch(() => chartData.value, () => {
 
 .top10-chart-card,
 .sector-table-card,
-.stock-table-card {
+.stock-table-card,
+.factor-tree-card {
   margin-bottom: 20px;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .positive {
@@ -806,6 +1123,307 @@ watch(() => chartData.value, () => {
   font-weight: 500;
 }
 
+/* 大盘指数卡片样式 */
+.market-card {
+  margin-top: 20px;
+}
+
+.market-card .card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* 指数行情展示 */
+.index-prices {
+  margin-bottom: 10px;
+}
+
+.index-item {
+  text-align: center;
+  padding: 10px 5px;
+  background: #f5f7fa;
+  border-radius: 4px;
+}
+
+.index-item .index-name {
+  font-size: 12px;
+  color: #606266;
+  margin-bottom: 4px;
+}
+
+.index-item .index-close {
+  font-size: 16px;
+  font-weight: bold;
+  color: #303133;
+}
+
+.index-item .index-pct {
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.index-item .index-pct.up {
+  color: #f56c6c;
+}
+
+.index-item .index-pct.down {
+  color: #67c23a;
+}
+
+.market-score {
+  text-align: center;
+  padding: 10px 0;
+}
+
+.market-score .score-value {
+  font-size: 36px;
+  font-weight: bold;
+  color: #409eff;
+}
+
+.market-score .score-label {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 4px;
+}
+
+.market-factors {
+  padding: 10px 0;
+}
+
+.factor-item {
+  text-align: center;
+  padding: 15px 10px;
+}
+
+.factor-item .factor-value {
+  font-size: 24px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.factor-item.small .factor-value {
+  font-size: 18px;
+}
+
+.factor-item .factor-label {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 5px;
+}
+
+/* 因子树样式 */
+.factor-tree {
+  margin-top: 10px;
+}
+
+.level-description {
+  color: #666;
+  font-size: 13px;
+  margin-bottom: 15px;
+  padding: 8px 12px;
+  background: #f5f7fa;
+  border-radius: 4px;
+}
+
+.dependency-tag {
+  margin-right: 5px;
+  margin-bottom: 3px;
+}
+
+.expression {
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 12px;
+  color: #e6a23c;
+  background: #fdf6ec;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.factor-tree-dialog {
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.factor-tree-dialog .total-score {
+  text-align: center;
+  padding: 15px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 8px;
+  margin-bottom: 20px;
+  color: white;
+}
+
+.factor-tree-dialog .score-label {
+  font-size: 14px;
+  margin-right: 10px;
+}
+
+.factor-tree-dialog .score-value {
+  font-size: 32px;
+  font-weight: bold;
+}
+
+.tree-visualization {
+  padding: 10px;
+  background: #fafafa;
+  border-radius: 8px;
+  min-height: 300px;
+}
+
+.factor-visual-tree {
+  background: transparent;
+}
+
+.visual-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  flex: 1;
+}
+
+.visual-node.level-1 {
+  background: #e6f7ff;
+  border-left: 3px solid #1890ff;
+}
+
+.visual-node.level-2 {
+  background: #fff7e6;
+  border-left: 3px solid #fa8c16;
+}
+
+.visual-node.level-3 {
+  background: #f6ffed;
+  border-left: 3px solid #52c41a;
+}
+
+.visual-node .node-icon {
+  font-size: 16px;
+}
+
+.visual-node.level-1 .node-icon { color: #1890ff; }
+.visual-node.level-2 .node-icon { color: #fa8c16; }
+.visual-node.level-3 .node-icon { color: #52c41a; }
+
+.visual-node .node-content {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.visual-node .node-label {
+  font-weight: 500;
+  color: #333;
+}
+
+.visual-node .node-code {
+  color: #999;
+  font-size: 12px;
+}
+
+.visual-node .node-value {
+  margin-left: auto;
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.visual-node .node-value.positive {
+  background: #fdf6ec;
+  color: #e6a23c;
+}
+
+.visual-node .node-value.negative {
+  background: #f0f9eb;
+  color: #67c23a;
+}
+
+.visual-node .node-formula {
+  font-size: 11px;
+  color: #666;
+  font-family: monospace;
+  background: #f5f5f5;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.visual-node .dep-arrow {
+  color: #999;
+  font-weight: bold;
+}
+
+.tree-legend {
+  display: flex;
+  justify-content: center;
+  gap: 30px;
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid #eee;
+}
+
+.tree-legend .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #666;
+  font-size: 13px;
+}
+
+.factor-tree-component {
+  background: transparent;
+}
+
+.tree-node {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.node-name {
+  font-weight: 500;
+}
+
+.node-value {
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+.node-value.positive {
+  background: #fdf6ec;
+  color: #e6a23c;
+}
+
+.node-value.negative {
+  background: #f0f9eb;
+  color: #67c23a;
+}
+
+.node-expression {
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 11px;
+  color: #909399;
+  background: #f5f7fa;
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+.node-method {
+  font-size: 11px;
+  color: #909399;
+}
+
+.no-dep,
+.no-expression {
+  color: #999;
+  font-size: 12px;
+}
+
 .clickable-tag {
   cursor: pointer;
   transition: all 0.3s;
@@ -814,6 +1432,17 @@ watch(() => chartData.value, () => {
 .clickable-tag:hover {
   color: #409eff;
   transform: scale(1.05);
+}
+
+/* 大盘指数详情弹窗 */
+.factor-tree-dialog .detail-section {
+  margin-bottom: 20px;
+}
+
+.factor-tree-dialog .detail-section h4 {
+  margin-bottom: 15px;
+  color: #303133;
+  font-size: 16px;
 }
 
 /* 标签管理样式 */

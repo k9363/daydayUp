@@ -43,6 +43,10 @@ export function createBaostockReviewTask(data) {
     dimensions: data.dimensions || [],
     rules: data.rules || []
   }
+  // 如果有 stock_filter 参数
+  if (data.stockFilter) {
+    taskData.stock_filter = data.stockFilter
+  }
   // 如果有 overwrite 参数
   if (data.overwrite) {
     taskData.overwrite = true
@@ -319,4 +323,83 @@ export function removeStockTag(stockCode, tagId) {
 // 批量获取股票的标签
 export function getBatchStockTags(stockCodes) {
   return request.post('/tag/batch/stock/tags', { stock_codes: stockCodes })
+}
+
+// ==================== 因子管理API ====================
+
+// 获取因子列表
+export function getFactorList(params) {
+  return request.get('/factor/list', { params })
+}
+
+// 获取单个因子
+export function getFactor(factorId) {
+  return request.get(`/factor/${factorId}`)
+}
+
+// 创建因子
+export function createFactor(data) {
+  return request.post('/factor', data)
+}
+
+// 更新因子
+export function updateFactor(factorId, data) {
+  return request.put(`/factor/${factorId}`, data)
+}
+
+// 删除因子
+export function deleteFactor(factorId) {
+  return request.delete(`/factor/${factorId}`)
+}
+
+// 批量创建因子
+export function batchCreateFactors(data) {
+  return request.post('/factor/batch', data)
+}
+
+// 获取因子下拉选项
+export function getFactorOptions(params) {
+  return request.get('/factor/options', { params })
+}
+
+// ==================== 表达式管理API ====================
+
+// 获取表达式列表
+export function getExpressionList(params) {
+  return request.get('/expression/list', { params })
+}
+
+// 获取单个表达式
+export function getExpression(exprId) {
+  return request.get(`/expression/${exprId}`)
+}
+
+// 创建表达式
+export function createExpression(data) {
+  return request.post('/expression', data)
+}
+
+// 更新表达式
+export function updateExpression(exprId, data) {
+  return request.put(`/expression/${exprId}`, data)
+}
+
+// 删除表达式
+export function deleteExpression(exprId) {
+  return request.delete(`/expression/${exprId}`)
+}
+
+// 测试表达式
+export function testExpression(data) {
+  return request.post('/expression/test', data)
+}
+
+// 计算表达式
+export function calculateExpression(data) {
+  return request.post('/expression/calculate', data)
+}
+
+// 获取默认表达式
+export function getDefaultExpression(scope) {
+  return request.get(`/expression/default/${scope}`)
 }

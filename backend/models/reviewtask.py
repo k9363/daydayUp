@@ -27,6 +27,7 @@ class ReviewTask(db.Model):
     review_type = db.Column(db.String(20), nullable=False, comment='复盘类型: daily-日复盘, weekly-周复盘, monthly-月复盘, custom-自定义')
     dimensions = db.Column(db.Text, comment='分析维度(JSON数组)')
     rules = db.Column(db.Text, comment='复盘规则(JSON格式)')
+    stock_filter = db.Column(db.String(500), comment='股票筛选条件(JSON格式)')
     
     # 执行状态
     status = db.Column(db.String(20), default='pending', comment='状态: pending-待执行, running-执行中, completed-已完成, failed-失败')

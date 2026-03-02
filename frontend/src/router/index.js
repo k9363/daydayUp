@@ -54,13 +54,25 @@ const routes = [
         component: () => import('@/views/DeliveryUpload.vue'),
         meta: { title: '上传交割单' }
       },
-      {
+  {
         path: 'delivery/list',
-        name: 'DeliveryList',
-        component: () => import('@/views/DeliveryList.vue'),
-        meta: { title: '交割单列表' }
-      }
-    ]
+    name: 'DeliveryList',
+    component: () => import('@/views/DeliveryList.vue'),
+    meta: { title: '交割单列表' }
+  },
+  {
+        path: 'admin/factors',
+    name: 'FactorList',
+    component: () => import('@/views/admin/FactorList.vue'),
+    meta: { title: '因子管理' }
+  },
+  {
+        path: 'admin/expressions',
+    name: 'ExpressionList',
+    component: () => import('@/views/admin/ExpressionList.vue'),
+    meta: { title: '表达式配置' }
+  }
+]
   }
 ]
 

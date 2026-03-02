@@ -61,6 +61,21 @@
             <span>交割单列表</span>
           </el-menu-item>
         </el-sub-menu>
+        
+        <el-sub-menu index="admin-group">
+          <template #title>
+            <el-icon><Setting /></el-icon>
+            <span>因子配置</span>
+          </template>
+          <el-menu-item index="/admin/factors">
+            <el-icon><Operation /></el-icon>
+            <span>因子管理</span>
+          </el-menu-item>
+          <el-menu-item index="/admin/expressions">
+            <el-icon><Edit /></el-icon>
+            <span>表达式配置</span>
+          </el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </el-aside>
     

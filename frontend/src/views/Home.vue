@@ -81,48 +81,22 @@
             <span>近期复盘趋势（近10个交易日）</span>
           </div>
         </template>
-        <el-row :gutter="20" v-if="dashboardData.length > 0">
-          <!-- 板块前10趋势 -->
+        
+        <!-- 趋势图表 -->
+        <el-row :gutter="20" v-if="dashboardData.length > 0" style="margin-bottom: 20px">
+          <!-- 大盘指数折线图 -->
           <el-col :span="12">
-            <div class="chart-title">板块前10得分</div>
-            <div class="dashboard-chart">
-              <el-table :data="dashboardData" stripe size="small" :max-height="400">
-                <el-table-column prop="tradeDate" label="交易日" width="120" fixed />
-                <el-table-column label="板块Top10" min-width="300">
-                  <template #default="{ row }">
-                    <el-tag v-for="sector in row.sectors.slice(0, 3)" :key="sector.name" 
-                            type="warning" size="small" style="margin-right: 4px">
-                      {{ sector.name }}
-                    </el-tag>
-                    <span v-if="row.sectors.length > 3" class="more-text">
-                      +{{ row.sectors.length - 3 }}个
-                    </span>
-                  </template>
-                </el-table-column>
-              </el-table>
-            </div>
+            <div class="chart-title">大盘指数得分趋势</div>
+            <div ref="marketChartRef" class="trend-chart"></div>
           </el-col>
-          <!-- 因子得分Top10趋势 -->
+          <!-- 股票因子折线图 -->
           <el-col :span="12">
-            <div class="chart-title">因子得分 Top 10 股票</div>
-            <div class="dashboard-chart">
-              <el-table :data="dashboardData" stripe size="small" :max-height="400">
-                <el-table-column prop="tradeDate" label="交易日" width="120" fixed />
-                <el-table-column label="股票Top10" min-width="300">
-                  <template #default="{ row }">
-                    <el-tag v-for="stock in row.factorStocks.slice(0, 3)" :key="stock.code" 
-                            type="success" size="small" style="margin-right: 4px">
-                      {{ stock.name }}
-                    </el-tag>
-                    <span v-if="row.factorStocks.length > 3" class="more-text">
-                      +{{ row.factorStocks.length - 3 }}只
-                    </span>
-                  </template>
-                </el-table-column>
-              </el-table>
-            </div>
+            <div class="chart-title">因子Top10股票得分趋势</div>
+            <div ref="stockChartRef" class="trend-chart"></div>
           </el-col>
         </el-row>
+        
+        <!-- 详细数据表格 -->
         <el-empty v-else description="暂无复盘数据，请先创建复盘任务" />
       </el-card>
     </div>
@@ -189,8 +163,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { getReviewTaskList, getDashboardData } from '@/api'
+import * as echarts from 'echarts'
 
 const loading = ref(false)
 const taskCount = ref(0)
@@ -199,6 +174,170 @@ const warningCount = ref(0)
 const pendingCount = ref(0)
 const recentTasks = ref([])
 const dashboardData = ref([])  // 仪表盘数据
+
+// 大盘得分折线图配置
+const marketChartRef = ref(null)
+const stockChartRef = ref(null)
+let marketChart = null
+let stockChart = null
+
+// 准备图表数据
+const marketChartData = computed(() => {
+  const data = dashboardData.value.slice().reverse()  // 反转顺序，按时间正序
+  return {
+    dates: data.map(d => d.tradeDate),
+    scores: data.map(d => d.marketScore)
+  }
+})
+
+const stockChartData = computed(() => {
+  const data = dashboardData.value.slice().reverse()
+  
+  // 按名次构建数据：Top1, Top2, ..., Top10
+  const series = []
+  for (let rank = 0; rank < 10; rank++) {
+    series.push({
+      name: `Top${rank + 1}`,
+      data: data.map(d => {
+        const scores = d.topStockScores || []
+        return scores.length > rank ? scores[rank] : null
+      })
+    })
+  }
+  
+  return {
+    dates: data.map(d => d.tradeDate),
+    series: series,
+    stocks: data.map(d => d.stockRanks || [])
+  }
+})
+
+const initMarketChart = () => {
+  if (!marketChartRef.value) return
+  marketChart = echarts.init(marketChartRef.value)
+  const data = marketChartData.value
+  
+  const option = {
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        const param = params[0]
+        return `${param.name}<br/>大盘得分: ${param.value !== null ? param.value.toFixed(3) : '无数据'}`
+      }
+    },
+    xAxis: {
+      type: 'category',
+      data: data.dates,
+      axisLabel: {
+        rotate: 45
+      }
+    },
+    yAxis: {
+      type: 'value',
+      name: '得分',
+      axisLabel: {
+        formatter: (value) => value.toFixed(1)
+      }
+    },
+    series: [{
+      data: data.scores,
+      type: 'line',
+      smooth: true,
+      symbol: 'circle',
+      symbolSize: 8,
+      lineStyle: {
+        color: '#409EFF',
+        width: 3
+      },
+      itemStyle: {
+        color: '#409EFF'
+      },
+      areaStyle: {
+        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: 'rgba(64, 158, 255, 0.3)' },
+          { offset: 1, color: 'rgba(64, 158, 255, 0.05)' }
+        ])
+      }
+    }]
+  }
+  marketChart.setOption(option)
+}
+
+const initStockChart = () => {
+  if (!stockChartRef.value) return
+  stockChart = echarts.init(stockChartRef.value)
+  const data = stockChartData.value
+  
+  // 颜色数组
+  const colors = ['#67C23A', '#409EFF', '#E6A23C', '#F56C6C', '#909399', '#19BE6B', '#FFB800', '#46ADFD', '#FF6B6B', '#9B59B6']
+  
+  // 构建 series
+  const series = data.series.map((s, idx) => ({
+    name: s.name,
+    type: 'line',
+    smooth: true,
+    symbol: 'circle',
+    symbolSize: 6,
+    data: s.data,
+    lineStyle: {
+      width: 2
+    },
+    itemStyle: {
+      color: colors[idx % colors.length]
+    }
+  }))
+  
+  const option = {
+    tooltip: {
+      trigger: 'axis',
+      confine: true,
+      extraCssText: 'max-width: 300px; white-space: normal; word-wrap: break-word;',
+      formatter: (params) => {
+        let html = `${params[0].name}<br/>`
+        params.forEach(p => {
+          if (p.value !== null) {
+            // 查找该名次对应的股票名称
+            const dateIdx = data.dates.indexOf(p.name)
+            const stocks = dateIdx >= 0 ? data.stocks[dateIdx] : []
+            const rank = parseInt(p.seriesName.replace('Top', '')) - 1
+            const stockName = stocks[rank] ? stocks[rank].name : ''
+            html += `${p.marker} ${p.seriesName}: ${p.value.toFixed(2)} ${stockName ? `(${stockName})` : ''}<br/>`
+          }
+        })
+        return html
+      }
+    },
+    legend: {
+      type: 'scroll',
+      orient: 'horizontal',
+      bottom: 0,
+      width: '80%'
+    },
+    xAxis: {
+      type: 'category',
+      data: data.dates,
+      axisLabel: {
+        rotate: 45
+      }
+    },
+    yAxis: {
+      type: 'value',
+      name: '得分',
+      axisLabel: {
+        formatter: (value) => value.toFixed(1)
+      }
+    },
+    series: series
+  }
+  stockChart.setOption(option)
+}
+
+const updateCharts = () => {
+  setTimeout(() => {
+    initMarketChart()
+    initStockChart()
+  }, 100)
+}
 
 const getStatusName = (status) => {
   const statuses = {
@@ -241,6 +380,8 @@ const loadData = async () => {
       const dashboardRes = await getDashboardData()
       console.log('仪表盘数据:', dashboardRes)
       dashboardData.value = dashboardRes.data || []
+      // 更新图表
+      updateCharts()
     } catch (e) {
       console.error('获取仪表盘数据失败:', e)
       dashboardData.value = []
@@ -348,6 +489,18 @@ onMounted(() => {
 .dashboard-section .dashboard-chart {
   border: 1px solid #ebeef5;
   border-radius: 4px;
+}
+
+.dashboard-section .chart-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 10px;
+}
+
+.dashboard-section .trend-chart {
+  height: 300px;
+  width: 100%;
 }
 
 .card-header {

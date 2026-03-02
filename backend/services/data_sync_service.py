@@ -321,7 +321,7 @@ class DataSyncService:
         
         task = None
         if task_id > 0:
-        task = DataSyncTask.query.get(task_id)
+            task = DataSyncTask.query.get(task_id)
         if not task:
             raise Exception(f"任务不存在: {task_id}")
 
@@ -339,9 +339,9 @@ class DataSyncService:
             logger.info(f"任务继续执行，已处理 {len(processed_codes_set)} 只股票")
         
         if task:
-        task.status = 'running'
-        task.start_time = datetime.now()
-        db_session.commit()
+            task.status = 'running'
+            task.start_time = datetime.now()
+            db_session.commit()
 
         try:
             self.login()
@@ -390,8 +390,8 @@ class DataSyncService:
                 logger.info(f"从数据库获取到 {len(stock_codes)} 只股票")
             
             if task:
-            task.total_stocks = len(stock_codes)
-            db_session.commit()
+                task.total_stocks = len(stock_codes)
+                db_session.commit()
 
             # 断点续传：过滤掉已处理的股票
             remaining_codes = [code for code in stock_codes if code not in processed_codes_set]
@@ -426,7 +426,7 @@ class DataSyncService:
 
                     total_processed += 1
                     if task:
-                    task.processed_stocks = total_processed
+                        task.processed_stocks = total_processed
                         task.total_records = total_saved
 
                     # 断点续传：更新已处理的股票代码列表（每10个股票更新一次）
@@ -473,14 +473,13 @@ class DataSyncService:
                 # 元数据补充失败不应影响主流程
 
             if task:
-            task.status = 'completed'
-            task.end_time = datetime.now()
-            task.processed_stocks = total_processed
-            task.saved_records = total_saved
+                task.status = 'completed'
+                task.end_time = datetime.now()
+                task.processed_stocks = total_processed
+                task.saved_records = total_saved
                 task.processed_codes = json.dumps(list(processed_codes_set))
-            db_session.commit()
-
-            return task.total_stocks, total_processed, task.total_records, total_saved
+                db_session.commit()
+                return task.total_stocks, total_processed, task.total_records, total_saved
             else:
                 # 没有任务时直接返回结果
                 db_session.commit()
@@ -488,10 +487,10 @@ class DataSyncService:
 
         except Exception as e:
             if task:
-            task.status = 'failed'
-            task.end_time = datetime.now()
-            task.error_message = str(e)
-            db_session.commit()
+                task.status = 'failed'
+                task.end_time = datetime.now()
+                task.error_message = str(e)
+                db_session.commit()
             raise e
         finally:
             self.logout()

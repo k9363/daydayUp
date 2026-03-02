@@ -17,6 +17,8 @@ from models.kline import (
 )
 from models.delivery import StockDelivery
 from models.tag import StockTag, StockTagRelation
+from models.factor import FactorDefine
+from models.expression import ScoreExpression
 
 
 def init_db(app):
