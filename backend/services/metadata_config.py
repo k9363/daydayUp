@@ -6,7 +6,7 @@
 # 元数据补充配置
 METADATA_SUPPLEMENT_CONFIG = {
     # 是否在数据同步时自动补充元数据
-    'auto_supplement_on_sync': True,
+    'auto_supplement_on_sync': False,
 
     # 是否在复盘时自动补充元数据
     'auto_supplement_on_review': True,

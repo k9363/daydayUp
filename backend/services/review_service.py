@@ -839,8 +839,15 @@ class ReviewTaskService:
             baostock_service = get_baostock_service()
 
             logger.info(f"📊 步骤1: 获取 {trade_date} 的日K线数据")
-            all_stocks_df = self._fetch_daily_data(trade_date, db.session)
+            
+            # 传入 create_sync_task=True 和 review_task_id，允许创建同步任务并等待回调
+            all_stocks_df = self._fetch_daily_data(trade_date, db.session, create_sync_task=True, review_task_id=task_id)
             kline_type = '日K'
+
+            # 如果返回空 DataFrame 且任务状态是 waiting_for_sync，说明已创建同步任务等待回调
+            if all_stocks_df.empty and task.status == 'waiting_for_sync':
+                logger.info(f"📊 已创建数据同步任务，等待同步完成...")
+                return task
 
             if all_stocks_df.empty:
                 raise Exception(f"未能获取到 {trade_date} 的{kline_type}数据")
@@ -929,13 +936,136 @@ class ReviewTaskService:
             logger.error(f"❌ 复盘任务失败: {e}")
             raise Exception(f"复盘执行失败: {str(e)}")
 
-    def _fetch_daily_data(self, trade_date, db_session):
+    def execute_baostock_task_continue(self, task_id):
+        """
+        继续执行被数据同步打断的复盘任务（跳过数据获取步骤）
+
+        Args:
+            task_id: 任务ID
+
+        Returns:
+            ReviewTask: 执行后的任务
+        """
+        import pandas as pd
+        from services.metadata_config import is_auto_supplement_enabled
+
+        task = ReviewTask.query.get(task_id)
+
+        if not task:
+            raise Exception("任务不存在")
+
+        if task.status != 'running':
+            logger.info(f"任务状态不是 running，跳过继续执行: {task.status}")
+            return task
+
+        try:
+            trade_date = task.trade_date
+            review_type = task.review_type or 'daily'
+            logger.info(f"📊 ========== 继续执行复盘任务: {trade_date} ({review_type}) ==========")
+
+            # ========== 步骤1: 直接获取已同步的数据 ==========
+            from models.kline import StockDailyKLine
+            
+            logger.info(f"📊 步骤1: 获取已同步的 {trade_date} 日K线数据")
+            stock_records = db.session.query(StockDailyKLine).filter(
+                StockDailyKLine.trade_date == trade_date
+            ).all()
+            
+            if not stock_records:
+                raise Exception(f"数据同步后仍未能获取到 {trade_date} 的日K数据")
+            
+            stock_data = [record.to_dict() for record in stock_records]
+            all_stocks_df = pd.DataFrame(stock_data)
+            kline_type = '日K'
+
+            logger.info(f"✅ 步骤1完成: 获取到 {len(all_stocks_df)} 只股票的{kline_type}数据")
+
+            # 后续步骤与主流程相同...
+            # ========== 步骤2: 根据筛选条件过滤股票 ==========
+            stock_filter = None
+            if task.stock_filter:
+                try:
+                    stock_filter = json.loads(task.stock_filter)
+                except:
+                    stock_filter = None
+            
+            filter_type = stock_filter.get('type', 'top_by_amount') if stock_filter else 'top_by_amount'
+            filter_value = stock_filter.get('value', 100) if stock_filter else 100
+            
+            logger.info(f"📊 步骤2: 筛选股票 - 类型: {filter_type}, 值: {filter_value}")
+            
+            if filter_type == 'top_by_amount':
+                top100_df = self._filter_top_stocks(all_stocks_df, top_n=filter_value)
+                filter_desc = f"成交金额前{filter_value}"
+            elif filter_type == 'all':
+                top100_df = all_stocks_df.copy()
+                filter_desc = "全部A股"
+            else:
+                top100_df = self._filter_top_stocks(all_stocks_df, top_n=100)
+                filter_desc = "成交金额前100"
+
+            if top100_df.empty:
+                raise Exception(f"未能筛选出股票: {filter_desc}")
+
+            logger.info(f"✅ 步骤2完成: 筛选出 {len(top100_df)} 只股票 ({filter_desc})")
+
+            # ========== 步骤3: 计算因子并排名 ==========
+            logger.info(f"📊 步骤3: 计算因子得分")
+            factor_calculator = get_factor_calculator()
+            stock_pool = top100_df['stock_code'].tolist()
+            factors_df = factor_calculator.calculate_stock_factors(stock_pool, trade_date, db.session)
+
+            if factors_df.empty:
+                raise Exception("未能计算因子得分")
+
+            # ========== 步骤4: 计算板块得分 ==========
+            logger.info(f"📊 步骤4: 计算板块得分")
+            sector_scores = factor_calculator.calculate_sector_factors(factors_df, db.session)
+
+            # ========== 步骤5: 保存结果 ==========
+            logger.info(f"📊 步骤5: 保存分析结果")
+            self._save_review_results(task, factors_df, sector_scores, db.session)
+
+            # ========== 步骤6: 更新任务状态 ==========
+            task.status = 'completed'
+            task.end_time = datetime.now()
+            task.row_count = len(factors_df)
+
+            # 生成结果摘要
+            top10_stocks = factors_df.nlargest(10, 'composite_score')[['stock_code', 'stock_name', 'composite_score']] if not factors_df.empty else pd.DataFrame()
+            top10_sector_names = sector_scores['sector_name'].head(10).tolist() if not sector_scores.empty else []
+            top10_stock_names = top10_stocks['stock_name'].head(3).tolist() if not top10_stocks.empty else []
+
+            task.result_summary = (
+                f"{trade_date}日: "
+                f"获取{len(all_stocks_df)}只A股，"
+                f"前100成交额{top100_df['turnover'].sum():.2f}，"
+                f"前10股票: {', '.join(top10_stock_names)}，"
+                f"前10板块: {', '.join(top10_sector_names[:3])}"
+            )
+
+            db.session.commit()
+
+            logger.info(f"📊 ========== 复盘任务完成(继续执行): {trade_date} ==========")
+            return task
+
+        except Exception as e:
+            task.status = 'failed'
+            task.end_time = datetime.now()
+            task.error_message = str(e)
+            db.session.commit()
+            logger.error(f"❌ 复盘任务继续执行失败: {e}")
+            raise Exception(f"复盘继续执行失败: {str(e)}")
+
+    def _fetch_daily_data(self, trade_date, db_session, create_sync_task=False, review_task_id=None):
         """
         获取指定日期的全部日K数据
 
         Args:
             trade_date: 交易日期
             db_session: 数据库会话
+            create_sync_task: 是否创建同步任务（用于等待回调）
+            review_task_id: 复盘任务ID（用于回调）
 
         Returns:
             pd.DataFrame: 包含所有股票日K数据的DataFrame
@@ -1006,7 +1136,73 @@ class ReviewTaskService:
 
         # 5. 直接复用 DataSyncService.sync_kline_data 批量获取和保存数据
         from services.data_sync_service import DataSyncService
+        from models.kline import DataSyncTask
+        import json
+        
         data_sync_service = DataSyncService()
+        
+        # 判断是否需要创建同步任务并等待回调
+        if create_sync_task and review_task_id and missing_codes:
+            # 创建数据同步任务
+            sync_task = DataSyncTask(
+                task_name=f"复盘任务自动同步 {trade_date}",
+                start_date=trade_date,
+                end_date=trade_date,
+                frequency='daily',
+                stock_type='all',
+                status='pending',
+                callback_type='review_task',
+                callback_params=json.dumps({'review_task_id': review_task_id})
+            )
+            db_session.add(sync_task)
+            db_session.commit()
+            sync_task_id = sync_task.id
+            
+            # 更新复盘任务状态
+            from models.reviewtask import ReviewTask
+            review_task = db_session.query(ReviewTask).get(review_task_id)
+            if review_task:
+                review_task.status = 'waiting_for_sync'
+                review_task.waiting_for_sync = True
+                review_task.sync_task_id = sync_task_id
+                db_session.commit()
+            
+            logger.info(f"创建数据同步任务: {sync_task_id}, 等待回调复盘任务: {review_task_id}")
+            
+            # 启动同步任务（在后台线程中执行）
+            from threading import Thread
+            from flask import current_app
+            
+            # 获取 app 实例
+            app = current_app._get_current_object()
+            
+            def run_sync_task():
+                # 关键：创建新的 app context
+                with app.app_context():
+                    from extensions import db
+                    from services.data_sync_service import DataSyncService
+                    sync_service = DataSyncService()
+                    try:
+                        sync_service.sync_kline_data(
+                            db_session=db.session,
+                            task_id=sync_task_id,
+                            start_date=trade_date,
+                            end_date=trade_date,
+                            frequency='daily',
+                            stock_codes=missing_codes,
+                            batch_size=100,
+                            request_interval=0
+                        )
+                    except Exception as e:
+                        logger.error(f"同步任务执行失败: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+            
+            thread = Thread(target=run_sync_task, daemon=True)
+            thread.start()
+            
+            # 返回空 DataFrame，表示需要等待
+            return pd.DataFrame()
         
         # 使用 sync_kline_data 批量处理，设置 request_interval=0 加快速度
         total_stock, processed_stock, total_records, saved_records = data_sync_service.sync_kline_data(
@@ -2064,60 +2260,49 @@ class ReviewTaskService:
                         'turnover': float(kline.turnover) if kline.turnover else 0
                     }
             
-            # 构建大盘因子树
+            # 构建大盘因子树 - 动态从数据库读取
+            from models.factor import FactorDefine
+            
+            # 获取所有大盘因子定义
+            market_factor_defs = db.session.query(FactorDefine).filter(
+                FactorDefine.factor_scope == 'market',
+                FactorDefine.is_active == True
+            ).order_by(FactorDefine.id).all()
+            
+            # 构建动态因子树
+            factors_tree = {}
+            for f in market_factor_defs:
+                # 解析依赖：如果是表达式计算，提取表达式中的变量名
+                dependencies = []
+                if f.source == 'calculated' and f.expression:
+                    import re
+                    # 提取表达式中的因子代码（变量名）
+                    var_names = re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', f.expression)
+                    # 过滤掉内置函数名
+                    builtins = {'IF', 'ABS', 'MAX', 'MIN', 'SUM', 'AVG', 'SQRT', 'LOG', 'ROUND', 'POW'}
+                    dependencies = [v for v in var_names if v not in builtins]
+                
+                factors_tree[f.factor_code] = {
+                    'factor_name': f.factor_name,
+                    'value': float(market_factors.get(f.factor_code, 0)) if market_factors.get(f.factor_code, 0) is not None else 0,
+                    'expression': f.expression or '',
+                    'dependencies': dependencies,
+                    'source': f.source,
+                    'calculation_method': f.calculation_method
+                }
+            
             market_tree = {
                 'type': 'market_overview',
-                'indexPrices': index_prices,  # 主要指数行情
-                'factors': {  # 大盘因子
-                    '大盘综合得分': {
-                        'value': market_factors.get('market_score', 0),
-                        'expression': '',
-                        'dependencies': []
-                    },
-                    '涨跌比': {
-                        'value': market_factors.get('up_down_ratio', 0),
-                        'expression': '上涨股票数 / 下跌股票数',
-                        'dependencies': []
-                    },
-                    '成交额前50涨跌比': {
-                        'value': market_factors.get('up_down_ratio_top50', 0),
-                        'expression': '成交额前50上涨数 / 下跌数',
-                        'dependencies': []
-                    },
-                    '指数总成交额': {
-                        'value': market_factors.get('total_turnover', 0),
-                        'expression': 'sh_turnover + sz_turnover',
-                        'dependencies': ['sh_turnover', 'sz_turnover']
-                    },
-                    '昨日总成交额': {
-                        'value': market_factors.get('total_turnover_y1', 0),
-                        'expression': 'sh_turnover_y1 + sz_turnover_y1',
-                        'dependencies': ['sh_turnover_y1', 'sz_turnover_y1']
-                    },
-                    '成交额增速': {
-                        'value': market_factors.get('turnover_growth', 0),
-                        'expression': 'IF(total_turnover_y1 > 0, total_turnover / total_turnover_y1 * 5, 0)',
-                        'dependencies': ['total_turnover', 'total_turnover_y1']
-                    },
-                    '5日线多头得分': {
-                        'value': market_factors.get('ma5_trend_score', 0),
-                        'expression': '股价在5日线上每天+0.2分',
-                        'dependencies': []
-                    },
-                    '10日线多头得分': {
-                        'value': market_factors.get('ma10_trend_score', 0),
-                        'expression': '股价在10日线上每天+0.1分',
-                        'dependencies': []
-                    }
-                }
+                'indexPrices': index_prices,
+                'factors': factors_tree
             }
             
             # 保存为一条记录
             market_result = ReviewResult()
             market_result.task_id = task.id
             market_result.dimension = '市场'
-            market_result.metric_name = '大盘指数'
-            market_result.metric_value = str(market_factors.get('market_score', 0))
+            market_result.metric_name = '大盘综合得分'
+            market_result.metric_value = str(float(market_factors.get('market_score', 0)) if market_factors.get('market_score', 0) is not None else 0)
             market_result.status = 'normal'
             market_result.detail_data = json.dumps(market_tree, ensure_ascii=False)
             results.append(market_result)

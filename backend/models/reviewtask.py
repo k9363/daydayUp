@@ -30,7 +30,9 @@ class ReviewTask(db.Model):
     stock_filter = db.Column(db.String(500), comment='股票筛选条件(JSON格式)')
     
     # 执行状态
-    status = db.Column(db.String(20), default='pending', comment='状态: pending-待执行, running-执行中, completed-已完成, failed-失败')
+    status = db.Column(db.String(20), default='pending', comment='状态: pending-待执行, running-执行中, completed-已完成, failed-失败, waiting_for_sync-等待数据同步')
+    waiting_for_sync = db.Column(db.Boolean, default=False, comment='是否等待数据同步任务完成')
+    sync_task_id = db.Column(db.BigInteger, comment='关联的数据同步任务ID')
     result_summary = db.Column(db.Text, comment='执行结果摘要')
     start_time = db.Column(db.DateTime, comment='开始时间')
     end_time = db.Column(db.DateTime, comment='结束时间')
@@ -61,6 +63,8 @@ class ReviewTask(db.Model):
             'dimensions': self.dimensions,
             'rules': self.rules,
             'status': self.status,
+            'waitingForSync': self.waiting_for_sync,
+            'syncTaskId': self.sync_task_id,
             'resultSummary': self.result_summary,
             'startTime': self.start_time.isoformat() if self.start_time else None,
             'endTime': self.end_time.isoformat() if self.end_time else None,
@@ -81,6 +85,9 @@ class ReviewTask(db.Model):
             'review_type': self.review_type,
             'dimensions': self.dimensions,
             'rules': self.rules,
+            'status': self.status,
+            'waiting_for_sync': self.waiting_for_sync,
+            'sync_task_id': self.sync_task_id,
             'result_summary': self.result_summary,
             'start_time': self.start_time.isoformat() if self.start_time else None,
             'end_time': self.end_time.isoformat() if self.end_time else None,
@@ -103,5 +110,7 @@ class ReviewTask(db.Model):
                 'normal': normal,
                 'warning': warning,
                 'critical': critical
-            }
+            },
+            'waiting_for_sync': self.waiting_for_sync,
+            'sync_task_id': self.sync_task_id
         }

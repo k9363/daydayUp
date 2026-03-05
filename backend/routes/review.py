@@ -2,12 +2,12 @@
 复盘任务API路由
 """
 import logging
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from services.review_service import get_review_task_service
 from extensions import db
 
 # 配置日志
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 review_bp = Blueprint('review', __name__)
@@ -257,13 +257,35 @@ def create_baostock_task():
             data_source_desc=f"获取{trade_date}日全A股市场股票列表"
         )
         
-        # 执行任务
-        task = service.execute_baostock_task(task.id)
+        # 先保存任务信息用于返回响应
+        task_response = task.to_dict_with_summary()
+        task_id = task.id
+        
+        # 异步执行任务，避免 gunicorn worker 超时
+        def run_baostock_task():
+            from extensions import db
+            from services.review_service import ReviewTaskService
+            
+            # 创建新的 app context，SQLAlchemy 会自动为新线程创建 session
+            with app.app_context():
+                service = ReviewTaskService()
+                try:
+                    service.execute_baostock_task(task_id)
+                except Exception as e:
+                    logger.error(f"Baostock复盘任务执行失败: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+
+        # 启动后台线程执行任务
+        from threading import Thread
+        app = current_app._get_current_object()
+        thread = Thread(target=run_baostock_task, daemon=True)
+        thread.start()
         
         return jsonify({
             'code': 200,
-            'message': '创建成功',
-            'data': task.to_dict_with_summary()
+            'message': '任务已创建并开始异步执行',
+            'data': task_response
         })
         
     except Exception as e:

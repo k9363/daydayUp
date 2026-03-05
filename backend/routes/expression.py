@@ -8,7 +8,8 @@ from models.expression import ScoreExpression
 
 logger = logging.getLogger(__name__)
 
-expression_bp = Blueprint('expression', __name__, url_prefix='/api/expression')
+# 在应用工厂中通过 url_prefix='/api/expression' 统一配置前缀
+expression_bp = Blueprint('expression', __name__)
 
 
 @expression_bp.route('/list', methods=['GET'])

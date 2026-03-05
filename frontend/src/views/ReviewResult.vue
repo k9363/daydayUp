@@ -462,7 +462,7 @@ const marketIndexTableData = computed(() => {
   }))
 })
 
-// 大盘因子树数据 - 与股票保持一致的树形结构
+// 大盘因子树数据 - 完全动态生成，根据后端返回的 dependencies 构建树形结构
 const marketFactorTreeData = computed(() => {
   if (!marketDetail.value || !marketDetail.value.factors) return []
   
@@ -470,65 +470,47 @@ const marketFactorTreeData = computed(() => {
   const result = []
   
   // 根节点：大盘综合得分
-  const marketScore = factors['大盘综合得分']
-  if (marketScore) {
-    const scoreNode = {
-      id: 'market-score',
-      name: '大盘综合得分',
-      code: 'market_score',
-      value: marketScore.value,
-      expression: '',
-      level: 3,
-      levelClass: 'level-3',
+  const marketScore = factors['market_score']
+  if (!marketScore) return []
+  
+  // 递归构建树节点（带去重）
+  const visited = new Set()
+  const buildTreeNode = (factorCode, level, parentId) => {
+    const factor = factors[factorCode]
+    if (!factor) return null
+    
+    // 去重：同一因子只展示一次
+    if (visited.has(factorCode)) return null
+    visited.add(factorCode)
+    
+    const node = {
+      id: parentId ? `${parentId}-${factorCode}` : factorCode,
+      name: factor.factor_name || factorCode,
+      code: factorCode,
+      value: factor.value,
+      expression: factor.expression || '',
+      level,
+      levelClass: `level-${level}`,
       children: []
     }
     
-    // 第二层：各分项因子
-    const subFactors = [
-      { name: '涨跌比', code: 'up_down_ratio', deps: [] },
-      { name: '成交额前50涨跌比', code: 'up_down_ratio_top50', deps: [] },
-      { name: '指数总成交额', code: 'total_turnover', deps: ['sh_turnover', 'sz_turnover'] },
-      { name: '昨日总成交额', code: 'total_turnover_y1', deps: ['sh_turnover_y1', 'sz_turnover_y1'] },
-      { name: '成交额增速', code: 'turnover_growth', deps: ['total_turnover', 'total_turnover_y1'] },
-      { name: '5日线多头得分', code: 'ma5_trend_score', deps: [] },
-      { name: '10日线多头得分', code: 'ma10_trend_score', deps: [] }
-    ]
-    
-    for (const sf of subFactors) {
-      const factorInfo = factors[sf.name]
-      if (factorInfo) {
-        const depNode = {
-          id: `market-${sf.code}`,
-          name: sf.name,
-          code: sf.code,
-          value: factorInfo.value,
-          expression: factorInfo.expression,
-          level: 2,
-          levelClass: 'level-2',
-          children: []
-        }
-        
-        // 第一层：依赖的数据源（如有）
-        for (const dep of sf.deps) {
-          const depFactor = factors[`${dep === 'sh_turnover' ? '上证成交额' : dep === 'sz_turnover' ? '深证成交额' : dep === 'sh_turnover_y1' ? '上证昨日成交额' : dep === 'sz_turnover_y1' ? '深证昨日成交额' : dep}`]
-          if (depFactor) {
-            depNode.children.push({
-              id: `market-${sf.code}-${dep}`,
-              name: depFactor.expression || dep,
-              code: dep,
-              value: depFactor.value,
-              level: 1,
-              levelClass: 'level-1',
-              isDependency: true
-            })
-          }
-        }
-        
-        scoreNode.children.push(depNode)
+    // 如果有依赖，递归构建子节点
+    const deps = factor.dependencies || []
+    for (const depCode of deps) {
+      const childNode = buildTreeNode(depCode, level - 1, node.id)
+      if (childNode) {
+        childNode.isDependency = true
+        node.children.push(childNode)
       }
     }
     
-    result.push(scoreNode)
+    return node
+  }
+  
+  // 从根节点开始构建
+  const rootNode = buildTreeNode('market_score', 3, '')
+  if (rootNode) {
+    result.push(rootNode)
   }
   
   return result
@@ -577,11 +559,18 @@ const stockFactorTreeData = computed(() => {
     return val !== undefined && val !== null ? parseFloat(val) : undefined
   }
   
+  // 去重：记录已处理的因子
+  const processedCodes = new Set()
+  
   // 第三层：综合得分因子
   const scoreFactors = levels.find(l => l.level === 3)?.factors || []
   const result = []
   
   for (const sf of scoreFactors) {
+    // 跳过已处理的因子
+    if (processedCodes.has(sf.code)) continue
+    processedCodes.add(sf.code)
+    
     const scoreNode = {
       id: `score-${sf.code}`,
       name: sf.name,
@@ -597,38 +586,46 @@ const stockFactorTreeData = computed(() => {
     if (sf.dependencies) {
       for (const dep of sf.dependencies) {
         const depFactor = factorMap[dep]
-        if (depFactor) {
-          const depNode = {
-            id: `dep-${sf.code}-${dep}`,
-            name: depFactor.name,
-            code: depFactor.code,
-            value: getValue(depFactor.code),
-            expression: depFactor.expression,
-            level: 2,
-            levelClass: 'level-2',
-            children: []
-          }
-          
-          // 第一层：数据源
-          if (depFactor.dependencies) {
-            for (const source of depFactor.dependencies) {
-              const sourceFactor = factorMap[source]
-              if (sourceFactor) {
-                depNode.children.push({
-                  id: `source-${dep}-${source}`,
-                  name: sourceFactor.name,
-                  code: sourceFactor.code,
-                  value: getValue(sourceFactor.code),
-                  level: 1,
-                  levelClass: 'level-1',
-                  isDependency: true
-                })
-              }
-            }
-          }
-          
-          scoreNode.children.push(depNode)
+        if (!depFactor) continue
+        
+        // 去重
+        if (processedCodes.has(dep)) continue
+        processedCodes.add(dep)
+        
+        const depNode = {
+          id: `dep-${sf.code}-${dep}`,
+          name: depFactor.name,
+          code: depFactor.code,
+          value: getValue(depFactor.code),
+          expression: depFactor.expression,
+          level: 2,
+          levelClass: 'level-2',
+          children: []
         }
+        
+        // 第一层：数据源
+        if (depFactor.dependencies) {
+          for (const source of depFactor.dependencies) {
+            const sourceFactor = factorMap[source]
+            if (!sourceFactor) continue
+            
+            // 去重
+            if (processedCodes.has(source)) continue
+            processedCodes.add(source)
+            
+            depNode.children.push({
+              id: `source-${dep}-${source}`,
+              name: sourceFactor.name,
+              code: sourceFactor.code,
+              value: getValue(sourceFactor.code),
+              level: 1,
+              levelClass: 'level-1',
+              isDependency: true
+            })
+          }
+        }
+        
+        scoreNode.children.push(depNode)
       }
     }
     

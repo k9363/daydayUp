@@ -293,6 +293,8 @@ class DataSyncTask(db.Model):
     frequency = db.Column(db.String(20), nullable=False, comment='K线频率: daily, weekly, monthly, 5, 15, 30, 60')
     stock_type = db.Column(db.String(20), default='all', comment='股票类型: all-全部, sh-上海, sz-深圳')
     status = db.Column(db.String(20), default='pending', comment='任务状态: pending, running, completed, failed')
+    callback_type = db.Column(db.String(50), nullable=True, comment='回调类型: review_task')
+    callback_params = db.Column(db.Text, nullable=True, comment='回调参数(JSON格式)')
     total_stocks = db.Column(db.Integer, default=0, comment='总股票数')
     processed_stocks = db.Column(db.Integer, default=0, comment='已处理股票数')
     total_records = db.Column(db.Integer, default=0, comment='总记录数')

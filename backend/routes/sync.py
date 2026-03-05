@@ -11,7 +11,8 @@ from models.kline import DataSyncTask
 
 logger = logging.getLogger(__name__)
 
-sync_bp = Blueprint('sync', __name__, url_prefix='/api/sync')
+# 在应用工厂中通过 url_prefix='/api/sync' 统一配置前缀
+sync_bp = Blueprint('sync', __name__)
 
 
 @sync_bp.route('/task', methods=['POST'])
@@ -123,6 +124,10 @@ def start_sync_task(task_id):
         # 允许从 stopped 状态继续，或者启动新的任务
         if task.status not in ['pending', 'stopped', 'failed']:
             return jsonify({'code': 400, 'message': f'任务状态为 {task.status}，无法启动'}), 400
+
+        # 立即更新任务状态为 running
+        task.status = 'running'
+        db.session.commit()
 
         # 启动异步任务
         from threading import Thread
@@ -378,6 +383,6 @@ def get_stock_kline(stock_code):
 
 
 def register_sync_blueprint(app):
-    """注册同步蓝图"""
-    app.register_blueprint(sync_bp)
+    """注册同步蓝图（用于非工厂模式）"""
+    app.register_blueprint(sync_bp, url_prefix='/api/sync')
 

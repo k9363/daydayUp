@@ -1,6 +1,7 @@
 # Flask Application Factory
 import logging
 import sys
+import atexit
 from flask import Flask
 from flask_cors import CORS
 from config import config
@@ -14,33 +15,73 @@ from routes.tag import tag_bp
 from routes.factor import factor_bp
 from routes.expression import expression_bp
 
-# 配置根日志：输出到 stderr（gunicorn 会捕获）
+# 配置根日志（gunicorn 会覆盖，但为 fallback 保留）
+_root_handler = logging.StreamHandler(sys.stderr)
+_root_handler.setFormatter(logging.Formatter(
+    '%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+))
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stderr)]
+    handlers=[_root_handler]
 )
 
 # 设置所有 logger 级别
 for name in logging.Logger.manager.loggerDict:
     logging.getLogger(name).setLevel(logging.INFO)
 
+# 全局 Baostock 登录状态
+_baostock_lg = None
+
+
+def _init_baostock_login():
+    """应用启动时初始化 Baostock 登录"""
+    global _baostock_lg
+    import baostock as bs
+    _baostock_lg = bs.login()
+    if _baostock_lg.error_code != '0':
+        logging.warning(f"⚠️ Baostock 初始登录失败: {_baostock_lg.error_msg}")
+    else:
+        logging.info("✅ Baostock 已登录（应用全局会话）")
+
+
+def _cleanup_baostock():
+    """应用退出时清理 Baostock 登录"""
+    import baostock as bs
+    global _baostock_lg
+    if _baostock_lg:
+        try:
+            bs.logout()
+            logging.info("✅ Baostock 已登出")
+        except Exception as e:
+            logging.warning(f"⚠️ Baostock 登出失败: {e}")
+
 
 def create_app(config_name=None):
     """应用工厂函数"""
     app = Flask(__name__)
-    
+
     # 加载配置
     if config_name is None:
         config_name = 'default'
     app.config.from_object(config[config_name])
-    
+
+    # gunicorn 会重置 logging，需要重新配置
+    _root_handler.setFormatter(logging.Formatter(
+        '%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    ))
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    logging.root.addHandler(_root_handler)
+    logging.root.setLevel(logging.INFO)
+
     # 初始化SQLAlchemy
     db.init_app(app)
-    
+
     # 初始化CORS
     CORS(app, resources={r"/api/*": {"origins": "*"}})
-    
+
     # 注册蓝图
     app.register_blueprint(review_bp, url_prefix='/api/review')
     app.register_blueprint(stock_bp, url_prefix='/api/stock')
@@ -50,7 +91,13 @@ def create_app(config_name=None):
     app.register_blueprint(tag_bp, url_prefix='/api/tag')
     app.register_blueprint(factor_bp, url_prefix='/api/factor')
     app.register_blueprint(expression_bp, url_prefix='/api/expression')
-    
+
+    # 启动时登录 Baostock
+    _init_baostock_login()
+
+    # 注册退出时登出 Baostock
+    atexit.register(_cleanup_baostock)
+
     # 根路径健康检查
     @app.route('/api/health')
     def health():
@@ -110,3 +157,6 @@ if __name__ == '__main__':
 
 # 创建全局 app 实例供 gunicorn 使用
 app = create_app('production')
+
+# 初始化定时任务调度器（gunicorn 模式下也需要启动）
+init_scheduler(app)

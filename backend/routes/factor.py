@@ -8,7 +8,8 @@ from models.factor import FactorDefine
 
 logger = logging.getLogger(__name__)
 
-factor_bp = Blueprint('factor', __name__, url_prefix='/api/factor')
+# 在应用工厂中通过 url_prefix='/api/factor' 统一配置前缀
+factor_bp = Blueprint('factor', __name__)
 
 
 @factor_bp.route('/list', methods=['GET'])

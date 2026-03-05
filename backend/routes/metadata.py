@@ -15,7 +15,8 @@ import io
 
 logger = logging.getLogger(__name__)
 
-metadata_bp = Blueprint('metadata', __name__, url_prefix='/api/metadata')
+# 在应用工厂中通过 url_prefix='/api/metadata' 统一配置前缀
+metadata_bp = Blueprint('metadata', __name__)
 
 
 @metadata_bp.route('/summary', methods=['GET'])
@@ -966,8 +967,8 @@ def create_sector():
 
 
 def register_metadata_blueprint(app):
-    """注册元数据蓝图"""
-    app.register_blueprint(metadata_bp)
+    """注册元数据蓝图（用于非工厂模式）"""
+    app.register_blueprint(metadata_bp, url_prefix='/api/metadata')
 
 
 # ==================== 个股信息补充接口 ====================

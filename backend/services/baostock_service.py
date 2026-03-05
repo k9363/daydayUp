@@ -308,46 +308,22 @@ class BaostockService:
             need_logout = True
 
         try:
-            # 尝试使用交易日历 API
-            if hasattr(bs, 'query_trade_calendar') or hasattr(bs, 'trade_cal'):
-                try:
-                    if hasattr(bs, 'query_trade_calendar'):
-                        rs = bs.query_trade_calendar(start_date=date, end_date=date)
-                    else:
-                        rs = bs.trade_cal(start_date=date, end_date=date)
-                    
-                    data_list = []
-                    while (rs.error_code == '0') and rs.next():
-                        data_list.append(dict(zip(rs.fields, rs.get_row_data())))
-                    
-                    logger.info(f"交易日历 API 返回: {data_list}")
-                    if data_list:
-                        calendar_entry = data_list[0]
-                        logger.info(f"日历条目字段: {calendar_entry}")
-                        # 尝试多种可能的字段名
-                        is_trading = (calendar_entry.get('is_trading_day') == '1' or 
-                                     calendar_entry.get('isTradingDay') == '1')
-                        if is_trading:
-                            return True
-                except Exception as e:
-                    logger.warning(f"交易日历 API 调用失败: {e}")
+            # 使用 baostock query_trade_dates API 获取交易日信息
+            rs = bs.query_trade_dates(start_date=date, end_date=date)
 
-            # 备用方法：检查股票数据是否有返回
-            logger.info(f"使用备用方法检查 {date} 是否为交易日...")
-            max_retries = 3
-            for retry in range(max_retries):
-                try:
-                    rs = bs.query_all_stock(day=date)
-                    data_list = []
-                    while (rs.error_code == '0') and rs.next():
-                        data_list.append(rs.get_row_data())
-                    logger.info(f"query_all_stock 返回 {len(data_list)} 条数据")
-                    return len(data_list) > 0
-                except Exception as e:
-                    logger.warning(f"查询股票列表异常: {e}")
-                    if retry < max_retries - 1:
-                        import time
-                        time.sleep(2)
+            data_list = []
+            while (rs.error_code == '0') & rs.next():
+                data_list.append(rs.get_row_data())
+
+            logger.info(f"query_trade_dates 返回: {data_list}")
+            if data_list and len(data_list) > 0:
+                # 返回字段: calendar_date, is_trading_day
+                # is_trading_day: '0'-非交易日, '1'-交易日
+                row = data_list[0]
+                if len(row) >= 2:
+                    is_trading = row[1] in ['1', 1]
+                    logger.info(f"is_trading_day: {row[1]}, is trading: {is_trading}")
+                    return is_trading
             return False
 
         finally:

@@ -75,21 +75,28 @@ sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no $USER@192.168.31.123 "
 echo ""
 echo ">> 检查并停止已有服务..."
 sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no $USER@192.168.31.123 "
-    # 检查 gunicorn 进程是否存在
-    if pgrep -f 'gunicorn.*app' > /dev/null 2>&1; then
-        echo '    发现运行中的服务，正在关闭...'
-        pkill -f 'gunicorn.*app' 2>/dev/null
-        sleep 2
-        # 强制关闭
-        pkill -9 -f 'gunicorn.*app' 2>/dev/null
-        sleep 1
-    fi
+    # 强制杀死所有相关进程
+    pkill -9 -f 'gunicorn.*app' 2>/dev/null || true
+    pkill -9 -f 'python.*app.py' 2>/dev/null || true
+    sleep 2
     
-    # 检查端口是否被占用
+    # 检查端口是否被占用，循环等待释放
+    for i in {1..10}; do
+        if lsof -i:5000 &>/dev/null; then
+            echo '    端口 5000 被占用，尝试释放...'
+            fuser -k 5000/tcp 2>/dev/null || true
+            sleep 1
+        else
+            echo '    ✓ 端口 5000 已释放'
+            break
+        fi
+    done
+    
+    # 最后确认一次
     if lsof -i:5000 &>/dev/null; then
-        echo '    端口 5000 被占用，正在释放...'
-        fuser -k 5000/tcp 2>/dev/null
-        sleep 1
+        echo '    ⚠ 端口仍被占用，强制杀死进程...'
+        fuser -k -9 5000/tcp 2>/dev/null || true
+        sleep 2
     fi
     
     echo '    ✓ 已停止已有服务'
@@ -102,17 +109,19 @@ sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no $USER@192.168.31.123 "
     cd $BACKEND_DIR
     
     # 使用虚拟环境的 gunicorn 启动（绝对路径）
-    # -w 4 workers，-D daemon模式
-    # --log-level info: 输出 info 级别日志
+    # -w 4 workers
+    # --log-level info: gunicorn 自身日志级别
+    # --capture-output: 捕获 worker 的 stdout/stderr 到日志文件
     # --timeout 300: 请求超时时间 300秒（避免数据同步超时）
     # --graceful-timeout 30: 优雅关闭超时时间
     nohup $BACKEND_DIR/venv/bin/gunicorn -w 4 -b 0.0.0.0:5000 \
         --log-level info \
+        --capture-output \
         --timeout 300 \
         --graceful-timeout 30 \
-        --error-logfile $LOG_DIR/backend_error.log \
+        --log-file $LOG_DIR/backend_error.log \
         --access-logfile $LOG_DIR/backend_access.log \
-        -D app:app > /dev/null 2>&1
+        app:app &
     
     sleep 2
     if curl -s http://127.0.0.1:5000 > /dev/null 2>&1; then

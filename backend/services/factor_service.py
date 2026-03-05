@@ -506,13 +506,16 @@ class FactorCalculator:
         Returns:
             大盘因子字典
         """
-        from models.factor import FactorSource
-        
+        # 直接使用字符串比较，避免导入问题
         # 获取大盘因子定义
         market_factors = FactorDefine.query.filter_by(
             factor_scope='market',
             is_active=True
         ).all()
+        
+        logger.info(f"📊 查询到 {len(market_factors)} 个大盘因子定义")
+        for f in market_factors:
+            logger.info(f"  - {f.factor_code}: {f.factor_name}, source={f.source}, method={f.calculation_method}, expression={f.expression}")
         
         if not market_factors:
             # 返回默认大盘因子
@@ -522,26 +525,52 @@ class FactorCalculator:
         
         # 第一遍：处理 kline 类型的因子（从指数K线获取数据）
         for factor in market_factors:
-            if factor.source == FactorSource.KLINE and factor.index_code and factor.field_name:
+            if factor.source == 'kline' and factor.index_code and factor.field_name:
                 # 从指数K线获取
                 index_kline = self._get_index_kline(factor.index_code, trade_date, db_session)
                 if index_kline:
                     market_data[factor.factor_code] = getattr(index_kline, factor.field_name, 0)
+                    logger.info(f"✅ K线因子 {factor.factor_code} = {market_data[factor.factor_code]}, 指数={factor.index_code}, 字段={factor.field_name}")
         
         # 第二遍：处理 python 类型的因子（通过Python方法计算）
         for factor in market_factors:
-            if factor.source == FactorSource.PYTHON:
+            if factor.source == 'python':
                 value = self._calculate_python_factor(factor, trade_date, db_session)
-                market_data[factor.factor_code] = value
+                # 如果返回的是字典（多个原子因子），展开为多个因子
+                if isinstance(value, dict):
+                    for k, v in value.items():
+                        market_data[k] = v
+                    logger.info(f"✅ Python因子 {factor.factor_code} 返回字典: {value}")
+                else:
+                    market_data[factor.factor_code] = value
+                    logger.info(f"✅ Python因子 {factor.factor_code} = {value}")
         
         # 第三遍：处理 calculated 类型的因子（通过表达式计算）
+        # 注意：为了确保依赖关系正确，先计算除 market_score 以外的所有因子，
+        # 然后再单独计算一次 market_score（它依赖于其它多个因子）
+        deferred_calculated_factors = []
         for factor in market_factors:
-            if factor.source == FactorSource.CALCULATED and factor.expression:
-                # 使用表达式计算
-                market_data[factor.factor_code] = self._evaluate_market_expression(
+            if factor.source == 'calculated' and factor.expression:
+                # 将 market_score 延后计算，确保其依赖的因子已经就绪
+                if factor.factor_code == 'market_score':
+                    deferred_calculated_factors.append(factor)
+                    continue
+                
+                result = self._evaluate_market_expression(
                     factor.expression, market_data
                 )
+                market_data[factor.factor_code] = result
+                logger.info(f"✅ 计算派生因子 {factor.factor_code} = {result}, 表达式: {factor.expression}")
         
+        # 最后再计算一次 market_score（如果存在）
+        for factor in deferred_calculated_factors:
+            result = self._evaluate_market_expression(
+                factor.expression, market_data
+            )
+            market_data[factor.factor_code] = result
+            logger.info(f"✅ 计算派生因子 {factor.factor_code} = {result}, 表达式: {factor.expression}（延后计算）")
+        
+        logger.info(f"📊 最终大盘因子结果: {market_data}")
         return market_data
     
     def _calculate_python_factor(self, factor, trade_date: str, db_session) -> float:
@@ -549,6 +578,7 @@ class FactorCalculator:
         根据 calculation_method 调用相应的Python计算方法
         """
         calc_method = factor.calculation_method
+        logger.info(f"🔍 处理因子 {factor.factor_code}, calculation_method={calc_method}")
         
         if calc_method == 'up_down_ratio':
             return self._calculate_up_down_ratio(trade_date, db_session)
@@ -573,6 +603,14 @@ class FactorCalculator:
                     return getattr(prev_kline, field, 0)
             return 0
         
+        elif calc_method == 'up_down_count':
+            # 原子因子：上涨家数、下跌家数、总家数
+            return self._calculate_up_down_count(trade_date, db_session)
+        
+        elif calc_method == 'up_down_count_top50':
+            # 原子因子：成交额前50的上涨家数、下跌家数
+            return self._calculate_up_down_count_top50(trade_date, db_session)
+        
         else:
             logger.warning(f"未知的 Python 计算方法: {calc_method}")
             return 0
@@ -582,16 +620,28 @@ class FactorCalculator:
         计算涨跌比：上涨股票数 / 下跌股票数
         """
         from models.kline import StockDailyKLine
+        from models.stockbasic import StockBasic
+        from sqlalchemy.orm import aliased
+        
+        # 使用 left outer join 避免过滤掉 stock_basic 中不存在的股票
+        sb = aliased(StockBasic)
         
         # 统计上涨和下跌的股票数量（排除平盘和停牌）
-        up_count = db_session.query(StockDailyKLine).filter(
+        up_count = db_session.query(StockDailyKLine).outerjoin(
+            sb, sb.stock_code == StockDailyKLine.stock_code
+        ).filter(
+            # stock_type == 'stock' 或者 stock_basic 中没有记录（允许旧数据兼容）
+            (sb.stock_type == 'stock') | (sb.stock_code.is_(None)),
             StockDailyKLine.trade_date == trade_date,
             StockDailyKLine.change_percent > 0,
             StockDailyKLine.turnover.isnot(None),
             StockDailyKLine.turnover > 0
         ).count()
         
-        down_count = db_session.query(StockDailyKLine).filter(
+        down_count = db_session.query(StockDailyKLine).outerjoin(
+            sb, sb.stock_code == StockDailyKLine.stock_code
+        ).filter(
+            (sb.stock_type == 'stock') | (sb.stock_code.is_(None)),
             StockDailyKLine.trade_date == trade_date,
             StockDailyKLine.change_percent < 0,
             StockDailyKLine.turnover.isnot(None),
@@ -608,9 +658,17 @@ class FactorCalculator:
         计算成交额前50股票的涨跌比
         """
         from models.kline import StockDailyKLine
+        from models.stockbasic import StockBasic
+        from sqlalchemy.orm import aliased
         
-        # 先获取成交额前50的股票
-        top50_stocks = db_session.query(StockDailyKLine.stock_code).filter(
+        # 使用 left outer join 避免过滤掉 stock_basic 中不存在的股票
+        sb = aliased(StockBasic)
+        
+        # 先获取成交额前50的股票（仅 stock 类型，排除 etf/index）
+        top50_stocks = db_session.query(StockDailyKLine.stock_code).outerjoin(
+            sb, sb.stock_code == StockDailyKLine.stock_code
+        ).filter(
+            (sb.stock_type == 'stock') | (sb.stock_code.is_(None)),
             StockDailyKLine.trade_date == trade_date,
             StockDailyKLine.turnover.isnot(None),
             StockDailyKLine.turnover > 0
@@ -622,13 +680,19 @@ class FactorCalculator:
             return 0
         
         # 统计前50中上涨和下跌的股票数量
-        up_count = db_session.query(StockDailyKLine).filter(
+        up_count = db_session.query(StockDailyKLine).outerjoin(
+            sb, sb.stock_code == StockDailyKLine.stock_code
+        ).filter(
+            (sb.stock_type == 'stock') | (sb.stock_code.is_(None)),
             StockDailyKLine.trade_date == trade_date,
             StockDailyKLine.stock_code.in_(top50_codes),
             StockDailyKLine.change_percent > 0
         ).count()
         
-        down_count = db_session.query(StockDailyKLine).filter(
+        down_count = db_session.query(StockDailyKLine).outerjoin(
+            sb, sb.stock_code == StockDailyKLine.stock_code
+        ).filter(
+            (sb.stock_type == 'stock') | (sb.stock_code.is_(None)),
             StockDailyKLine.trade_date == trade_date,
             StockDailyKLine.stock_code.in_(top50_codes),
             StockDailyKLine.change_percent < 0
@@ -638,6 +702,105 @@ class FactorCalculator:
             return float(up_count) if up_count > 0 else 0
         
         return float(up_count) / down_count
+    
+    def _calculate_up_down_count(self, trade_date: str, db_session) -> Dict:
+        """
+        计算涨跌家数原子因子：上涨家数、下跌家数、总家数
+        
+        Returns:
+            包含 up_count, down_count, total_count 的字典
+        """
+        from models.kline import StockDailyKLine
+        from models.stockbasic import StockBasic
+        from sqlalchemy.orm import aliased
+        
+        # 使用 left outer join 避免过滤掉 stock_basic 中不存在的股票
+        sb = aliased(StockBasic)
+        
+        # 统计上涨和下跌的股票数量（排除平盘和停牌）
+        up_count = db_session.query(StockDailyKLine).outerjoin(
+            sb, sb.stock_code == StockDailyKLine.stock_code
+        ).filter(
+            (sb.stock_type == 'stock') | (sb.stock_code.is_(None)),
+            StockDailyKLine.trade_date == trade_date,
+            StockDailyKLine.change_percent > 0,
+            StockDailyKLine.turnover.isnot(None),
+            StockDailyKLine.turnover > 0
+        ).count()
+        
+        down_count = db_session.query(StockDailyKLine).outerjoin(
+            sb, sb.stock_code == StockDailyKLine.stock_code
+        ).filter(
+            (sb.stock_type == 'stock') | (sb.stock_code.is_(None)),
+            StockDailyKLine.trade_date == trade_date,
+            StockDailyKLine.change_percent < 0,
+            StockDailyKLine.turnover.isnot(None),
+            StockDailyKLine.turnover > 0
+        ).count()
+        
+        result = {
+            'up_count': up_count,
+            'down_count': down_count,
+            'total_count': up_count + down_count
+        }
+        logger.info(f"📊 _calculate_up_down_count: {result}")
+        return result
+    
+    def _calculate_up_down_count_top50(self, trade_date: str, db_session) -> Dict:
+        """
+        计算成交额前50的涨跌家数原子因子
+        
+        Returns:
+            包含 up_count_top50, down_count_top50 的字典
+        """
+        from models.kline import StockDailyKLine
+        from models.stockbasic import StockBasic
+        from sqlalchemy.orm import aliased
+        
+        # 使用 left outer join 避免过滤掉 stock_basic 中不存在的股票
+        sb = aliased(StockBasic)
+        
+        # 先获取成交额前50的股票（仅 stock 类型，排除 etf/index）
+        top50_stocks = db_session.query(StockDailyKLine.stock_code).outerjoin(
+            sb, sb.stock_code == StockDailyKLine.stock_code
+        ).filter(
+            (sb.stock_type == 'stock') | (sb.stock_code.is_(None)),
+            StockDailyKLine.trade_date == trade_date,
+            StockDailyKLine.turnover.isnot(None),
+            StockDailyKLine.turnover > 0
+        ).order_by(StockDailyKLine.turnover.desc()).limit(50).all()
+        
+        top50_codes = [s.stock_code for s in top50_stocks]
+        
+        if not top50_codes:
+            return {
+                'up_count_top50': 0,
+                'down_count_top50': 0
+            }
+        
+        # 统计前50中上涨和下跌的股票数量
+        up_count = db_session.query(StockDailyKLine).outerjoin(
+            sb, sb.stock_code == StockDailyKLine.stock_code
+        ).filter(
+            (sb.stock_type == 'stock') | (sb.stock_code.is_(None)),
+            StockDailyKLine.trade_date == trade_date,
+            StockDailyKLine.stock_code.in_(top50_codes),
+            StockDailyKLine.change_percent > 0
+        ).count()
+        
+        down_count = db_session.query(StockDailyKLine).outerjoin(
+            sb, sb.stock_code == StockDailyKLine.stock_code
+        ).filter(
+            (sb.stock_type == 'stock') | (sb.stock_code.is_(None)),
+            StockDailyKLine.trade_date == trade_date,
+            StockDailyKLine.stock_code.in_(top50_codes),
+            StockDailyKLine.change_percent < 0
+        ).count()
+        
+        return {
+            'up_count_top50': up_count,
+            'down_count_top50': down_count
+        }
     
     def _calculate_trend_scores(self, trade_date: str, db_session) -> tuple:
         """
@@ -1022,10 +1185,6 @@ class FactorCalculator:
                         names[key] = float(value)
                     except (TypeError, ValueError):
                         pass
-            
-            # 处理除零 - 如果昨日成交额为0，直接返回0
-            if 'total_turnover_y1' in names and names.get('total_turnover_y1', 0) <= 0:
-                return 0
             
             result = simpleeval.simple_eval(expression, names=names, functions=self.simpleeval_functions)
             return float(result) if result else 0

@@ -8,7 +8,8 @@ from models.tag import StockTag, StockTagRelation
 
 logger = logging.getLogger(__name__)
 
-tag_bp = Blueprint('tag', __name__, url_prefix='/api/tag')
+# 在应用工厂中通过 url_prefix='/api/tag' 统一配置前缀
+tag_bp = Blueprint('tag', __name__)
 
 
 @tag_bp.route('/list', methods=['GET'])

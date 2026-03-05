@@ -344,12 +344,27 @@ const getTypeName = (type) => {
 }
 
 const getStatusName = (status) => {
-  const statuses = { pending: '待执行', running: '执行中', completed: '已完成', failed: '失败', normal: '正常', warning: '警告', critical: '严重' }
+  const statuses = { 
+    pending: '待执行', 
+    running: '执行中', 
+    completed: '已完成', 
+    failed: '失败', 
+    waiting_for_sync: '等待数据同步',
+    normal: '正常', 
+    warning: '警告', 
+    critical: '严重' 
+  }
   return statuses[status] || status
 }
 
 const getStatusType = (status) => {
-  const types = { pending: 'info', running: 'warning', completed: 'success', failed: 'danger' }
+  const types = { 
+    pending: 'info', 
+    running: 'warning', 
+    completed: 'success', 
+    failed: 'danger',
+    waiting_for_sync: 'warning'
+  }
   return types[status] || 'info'
 }
 

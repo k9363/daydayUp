@@ -102,12 +102,11 @@ class SchedulerService:
             
             is_trading_day = False
             if data_list and len(data_list) > 0:
-                # data_list[0] = [date, isWeekend, isHoliday, calendarYear, calendarQuarter]
-                # isWeekend: 0-工作日 1-周末
-                # isHoliday: 0-非节假日 1-节假日
-                # tradingDay: 0-非交易日 1-交易日
-                if len(data_list[0]) >= 6 and data_list[0][5] == '1':
-                    is_trading_day = True
+                # data_list[0] = [calendar_date, is_trading_day]
+                # is_trading_day: '0'-非交易日, '1'-交易日
+                row = data_list[0]
+                if len(row) >= 2:
+                    is_trading_day = row[1] in ['1', 1]
             
             if not is_trading_day:
                 logger.info(f"📅 {today} 不是交易日（通过baostock API查询），跳过复盘任务")

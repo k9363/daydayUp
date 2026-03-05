@@ -7,6 +7,7 @@ import pandas as pd
 import time
 import json
 import logging
+import socket
 from datetime import datetime, timedelta
 from models.kline import (
     StockDailyKLine,
@@ -24,22 +25,99 @@ logger = logging.getLogger(__name__)
 class DataSyncService:
     """数据同步服务"""
 
+    # Baostock 错误码：未登录或登录已过期
+    LOGIN_ERROR_CODES = {'10002007', '10002001', '10002002', '10002003'}
+
     def __init__(self):
-        self.bs = None
+        self.lg = None
 
     def login(self):
-        """登录Baostock"""
-        if self.bs is None:
-            self.bs = bs
-        lg = bs.login()
-        if lg.error_code != '0':
-            raise Exception(f"Baostock登录失败: {lg.error_msg}")
+        """登录Baostock，如果已登录则跳过"""
+        if self.lg is None or not self.lg.error_code == '0':
+            self.lg = bs.login()
+            if self.lg.error_code != '0':
+                raise Exception(f"Baostock登录失败: {self.lg.error_msg}")
         return True
 
     def logout(self):
         """登出Baostock"""
-        if self.bs:
+        if self.lg:
             bs.logout()
+            self.lg = None
+
+    def _execute_callback(self, task):
+        """执行任务完成后的回调"""
+        if not task.callback_type:
+            return
+            
+        logger.info(f"执行回调: type={task.callback_type}, task_id={task.id}")
+        
+        try:
+            import json
+            callback_params = json.loads(task.callback_params) if task.callback_params else {}
+        except:
+            callback_params = {}
+        
+        if task.callback_type == 'review_task':
+            review_task_id = callback_params.get('review_task_id')
+            if review_task_id:
+                self._callback_review_task(review_task_id)
+        else:
+            logger.warning(f"未知的回调类型: {task.callback_type}")
+    
+    def _callback_review_task(self, review_task_id):
+        """回调复盘任务继续执行"""
+        from extensions import db
+        from models.reviewtask import ReviewTask
+        from services.review_service import ReviewTaskService
+        
+        with db.app.app_context():
+            review_task = ReviewTask.query.get(review_task_id)
+            if not review_task:
+                logger.error(f"复盘任务不存在: {review_task_id}")
+                return
+            
+            if review_task.status != 'waiting_for_sync':
+                logger.warning(f"复盘任务状态不是 waiting_for_sync: {review_task.status}")
+                return
+            
+            # 更新任务状态为 running
+            review_task.status = 'running'
+            review_task.waiting_for_sync = False
+            review_task.sync_task_id = None
+            db.session.commit()
+            
+            # 直接在当前线程执行复盘任务（不再启动新线程，避免嵌套线程问题）
+            service = ReviewTaskService()
+            try:
+                # 设置 skip_data_fetch=True 表示跳过数据获取步骤，直接继续分析
+                service.execute_baostock_task_continue(review_task_id)
+            except Exception as e:
+                logger.error(f"回调执行复盘任务失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+
+    def ensure_login(self):
+        """
+        确保已登录，如果未登录或会话失效则自动重连
+        
+        Returns:
+            bool: 登录成功返回 True
+        """
+        try:
+            # 尝试一次查询来检测会话是否有效
+            rs = bs.query_trade_dates(start_date='2020-01-01', end_date='2020-01-01')
+            if rs.error_code == '0':
+                return True  # 会话有效
+            
+            # 会话失效，需要重新登录
+            if self.lg:
+                self.lg = None
+            return self.login()
+        except Exception:
+            # 任何异常都尝试重新登录
+            self.lg = None
+            return self.login()
 
     def get_stock_list(self, date=None, stock_type='all'):
         """
@@ -53,12 +131,12 @@ class DataSyncService:
             list: 股票代码列表
         """
         import baostock as bs
-        
+
         if date is None:
             date = datetime.now().strftime('%Y-%m-%d')
 
-        # 先登录
-        self.login()
+        # 确保已登录
+        self.ensure_login()
         
         # 先尝试指定日期
         rs = bs.query_all_stock(day=date)
@@ -129,7 +207,7 @@ class DataSyncService:
             list: K线数据列表
         """
         # 确保已登录
-        self.login()
+        self.ensure_login()
         
         # 映射频率到Baostock参数
         freq_map = {
@@ -143,29 +221,45 @@ class DataSyncService:
         }
         bs_freq = freq_map.get(frequency, 'd')
 
-        # 字段映射
+        # 字段映射（参考 Baostock 官方文档）
+        # 分钟线指标：code,date,time,open,high,low,close,volume,amount,adjustflag（无 pctChg）
+        # 周月线指标：code,date,open,high,low,close,volume,amount,adjustflag,turn,pctChg
+        # 日线指标：code,date,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST
         fields_map = {
-            'd': 'date,code,open,high,low,close,preclose,volume,amount,pctChg,turn,peTTM,psTTM',
-            'w': 'date,code,open,high,low,close,volume,amount,pctChg',
-            'm': 'date,code,open,high,low,close,volume,amount,pctChg',
-            '5': 'date,time,code,open,high,low,close,volume,amount,pctChg',
-            '15': 'date,time,code,open,high,low,close,volume,amount,pctChg',
-            '30': 'date,time,code,open,high,low,close,volume,amount,pctChg',
-            '60': 'date,time,code,open,high,low,close,volume,amount,pctChg'
+            'd': 'code,date,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST',
+            'w': 'code,date,open,high,low,close,volume,amount,adjustflag,turn,pctChg',
+            'm': 'code,date,open,high,low,close,volume,amount,adjustflag,turn,pctChg',
+            '5': 'code,date,time,open,high,low,close,volume,amount,adjustflag',
+            '15': 'code,date,time,open,high,low,close,volume,amount,adjustflag',
+            '30': 'code,date,time,open,high,low,close,volume,amount,adjustflag',
+            '60': 'code,date,time,open,high,low,close,volume,amount,adjustflag'
         }
 
         fields = fields_map.get(bs_freq, fields_map['d'])
 
         logger.info(f"查询K线: code={code}, start={start_date}, end={end_date}, freq={bs_freq}")
 
-        rs = bs.query_history_k_data_plus(
-            code=code,
-            start_date=start_date,
-            end_date=end_date,
-            fields=fields,
-            frequency=bs_freq,
-            adjustflag=adjustflag
-        )
+        # 添加超时保护，防止网络问题时导致 worker 崩溃
+        default_socket = socket.socket
+        original_timeout = socket.getdefaulttimeout()
+        try:
+            socket.setdefaulttimeout(30)  # 30秒超时
+            rs = bs.query_history_k_data_plus(
+                code=code,
+                start_date=start_date,
+                end_date=end_date,
+                fields=fields,
+                frequency=bs_freq,
+                adjustflag=adjustflag
+            )
+        except socket.timeout as e:
+            logger.warning(f"Baostock 请求超时: code={code}, {e}")
+            return []
+        except Exception as e:
+            logger.warning(f"Baostock 请求异常: code={code}, {e}")
+            return []
+        finally:
+            socket.setdefaulttimeout(original_timeout)
 
         logger.info(f"Baostock返回: error_code={rs.error_code}, error_msg={rs.error_msg}")
 
@@ -257,8 +351,13 @@ class DataSyncService:
                 'pre_close_price': row.get('preclose', 0) or None,
                 'volume': row.get('volume', 0) or None,
                 'turnover': row.get('amount', 0) or None,
-                'change_percent': row.get('pctChg', 0) or None,
             }
+            
+            # 日线/周线/月线支持 pctChg，分钟线不支持
+            if frequency in ['daily', 'weekly', 'monthly']:
+                mapping['change_percent'] = row.get('pctChg', 0) or None
+            else:
+                mapping['change_percent'] = None
 
             # 周线和月线特有字段
             if frequency == 'weekly':
@@ -273,6 +372,7 @@ class DataSyncService:
                 mapping['month_low'] = row.get('low', 0) or None
             elif frequency in ['5', '15', '30', '60']:
                 mapping['frequency'] = frequency
+                mapping['change_percent'] = None
 
             mappings.append(mapping)
             saved_count += 1
@@ -322,8 +422,16 @@ class DataSyncService:
         task = None
         if task_id > 0:
             task = DataSyncTask.query.get(task_id)
-        if not task:
-            raise Exception(f"任务不存在: {task_id}")
+            if not task:
+                raise Exception(f"任务不存在: {task_id}")
+            
+            # 设置回调参数
+            if task.callback_type == 'review_task':
+                try:
+                    import json
+                    callback_params = json.loads(task.callback_params) if task.callback_params else {}
+                except:
+                    callback_params = {}
 
         # 断点续传：检查是否已有已处理的股票列表
         processed_codes_set = set()
@@ -344,7 +452,8 @@ class DataSyncService:
             db_session.commit()
 
         try:
-            self.login()
+            # 确保已登录（自动重连如果会话失效）
+            self.ensure_login()
 
             # 如果传入了 stock_codes，直接使用；否则从数据库查询
             if stock_codes:
@@ -360,16 +469,33 @@ class DataSyncService:
                 # 从数据库获取股票列表（从元数据初始化好的 stock_basic 表）
                 from models.stockbasic import StockBasic
                 
+                # 分钟线不支持指数数据，需要排除
+                is_minute = frequency in ['5', '15', '30', '60']
+                
                 # 根据 stock_type 过滤（使用 stock_type 字段）
                 if stock_type in ['stock', 'etf', 'index']:
-                    query = db_session.query(StockBasic.stock_code, StockBasic.stock_name).filter(
-                        StockBasic.stock_type == stock_type
-                    )
+                    # 分钟线不支持指数
+                    if is_minute and stock_type == 'index':
+                        logger.warning("指数不支持分钟线数据，将跳过指数")
+                        stock_list_db = []
+                    else:
+                        query = db_session.query(StockBasic.stock_code, StockBasic.stock_name).filter(
+                            StockBasic.stock_type == stock_type
+                        )
+                        stock_list_db = query.all()
                 elif stock_type == 'all':
                     # all 类型：获取 stock, etf, index 三种类型
-                    query = db_session.query(StockBasic.stock_code, StockBasic.stock_name).filter(
-                        StockBasic.stock_type.in_(['stock', 'etf', 'index'])
-                    )
+                    if is_minute:
+                        # 分钟线不支持指数，排除 index
+                        logger.info("分钟线模式：排除指数类型")
+                        query = db_session.query(StockBasic.stock_code, StockBasic.stock_name).filter(
+                            StockBasic.stock_type.in_(['stock', 'etf'])
+                        )
+                    else:
+                        query = db_session.query(StockBasic.stock_code, StockBasic.stock_name).filter(
+                            StockBasic.stock_type.in_(['stock', 'etf', 'index'])
+                        )
+                    stock_list_db = query.all()
                 else:
                     # 兼容旧版本：sh/sz 使用 exchange 字段
                     query = db_session.query(StockBasic.stock_code, StockBasic.stock_name).filter(
@@ -379,8 +505,7 @@ class DataSyncService:
                         query = query.filter(StockBasic.exchange == 'sh')
                     elif stock_type == 'sz':
                         query = query.filter(StockBasic.exchange == 'sz')
-                
-                stock_list_db = query.all()
+                    stock_list_db = query.all()
                 
                 if not stock_list_db:
                     raise Exception("数据库中未找到股票列表，请先进行元数据初始化")
@@ -399,6 +524,7 @@ class DataSyncService:
             
             total_processed = len(processed_codes_set)
             total_saved = 0
+            failed_codes = []  # 记录失败的股票代码
 
             # 批量保存：积累多只股票数据后再保存
             batch_data_list = []  # 积累多只股票的数据
@@ -423,6 +549,9 @@ class DataSyncService:
                             total_saved += saved
                             batch_data_list = []  # 清空批次
                             current_batch_size = 0
+                    else:
+                        # 获取到空数据也视为失败
+                        failed_codes.append(code)
 
                     total_processed += 1
                     if task:
@@ -436,17 +565,86 @@ class DataSyncService:
                         db_session.commit()
                         logger.info(f"进度: {i + 1}/{len(remaining_codes)}, 已保存: {total_saved} 条")
 
+                        # 检查任务是否被暂停
+                        db_session.expire(task)
+                        if task.status == 'stopped':
+                            logger.info("任务已暂停，正在保存进度...")
+                            break
+
                     time.sleep(request_interval)
 
                 except Exception as e:
                     logger.error(f"获取 {code} 数据失败: {e}")
+                    failed_codes.append(code)
                     continue
+
+            # 检查是否因暂停而退出循环
+            if task and task.status == 'stopped':
+                logger.info("任务已暂停，正在保存进度...")
+                # 保存最后一批数据
+                if batch_data_list:
+                    saved = self.save_kline_data(db_session, batch_data_list, frequency, stock_name_map)
+                    logger.info(f"暂停前批量保存: {saved} 条")
+                    total_saved += saved
+
+                # 保存当前进度
+                task.processed_stocks = total_processed
+                task.saved_records = total_saved
+                task.processed_codes = json.dumps(list(processed_codes_set))
+                task.end_time = datetime.now()
+                db_session.commit()
+                logger.info(f"暂停完成，已处理 {total_processed} 只股票，已保存 {total_saved} 条")
+                return task.total_stocks, total_processed, task.total_records, total_saved
 
             # 最后一批不足阈值的也要保存
             if batch_data_list:
                 saved = self.save_kline_data(db_session, batch_data_list, frequency, stock_name_map)
                 logger.info(f"最后批量保存: {saved} 条")
                 total_saved += saved
+
+            # 第一轮处理完成，检查是否有失败的股票，进行重试
+            if failed_codes:
+                logger.info(f"第一轮处理完成，{len(failed_codes)} 只股票获取失败，开始重试...")
+                retry_count = 0
+                max_retries = 2  # 最多重试2次
+
+                while failed_codes and retry_count < max_retries:
+                    retry_count += 1
+                    retry_failed = []
+                    
+                    for code in failed_codes:
+                        try:
+                            # 确保每次重试前都检查登录状态
+                            self.ensure_login()
+                            
+                            data_list = self.get_kline_data(code, start_date, end_date, frequency)
+                            if data_list:
+                                batch_data_list.extend(data_list)
+                                current_batch_size += len(data_list)
+                                logger.info(f"重试获取 {code} 成功: {len(data_list)} 条")
+                            else:
+                                retry_failed.append(code)
+                        except Exception as e:
+                            logger.error(f"重试获取 {code} 失败: {e}")
+                            retry_failed.append(code)
+                    
+                    # 保存重试获取的数据
+                    if batch_data_list:
+                        saved = self.save_kline_data(db_session, batch_data_list, frequency, stock_name_map)
+                        logger.info(f"重试批量保存: {saved} 条")
+                        total_saved += saved
+                        batch_data_list = []
+                        current_batch_size = 0
+                    
+                    failed_codes = retry_failed
+                    logger.info(f"第 {retry_count} 轮重试完成，剩余失败: {len(failed_codes)} 只")
+                    
+                    if failed_codes:
+                        # 等待后继续重试
+                        time.sleep(2)
+
+                if failed_codes:
+                    logger.warning(f"重试后仍有 {len(failed_codes)} 只股票获取失败: {failed_codes[:10]}...")
 
             # 补充元数据（股票信息、板块信息、股票-板块关联）
             logger.info(f"开始为 {len(stock_codes)} 只股票补充元数据...")
@@ -479,6 +677,10 @@ class DataSyncService:
                 task.saved_records = total_saved
                 task.processed_codes = json.dumps(list(processed_codes_set))
                 db_session.commit()
+                
+                # 执行回调
+                self._execute_callback(task)
+                
                 return task.total_stocks, total_processed, task.total_records, total_saved
             else:
                 # 没有任务时直接返回结果
