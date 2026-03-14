@@ -57,11 +57,34 @@ def create_task():
         
         # 如果存在且需要覆盖，删除旧任务
         if existing_task and overwrite:
+            # 先保存旧任务的笔记（基于交易日期）
+            from models.dailynote import DailyNote
+            old_note = DailyNote.query.filter_by(trade_date=trade_date).first()
+            saved_market_analysis = old_note.market_analysis if old_note else None
+            saved_next_action = old_note.next_action if old_note else None
+            
             # 删除旧任务及其结果
             from models.reviewresult import ReviewResult
             ReviewResult.query.filter(ReviewResult.task_id == existing_task.id).delete()
             db.session.delete(existing_task)
             db.session.commit()
+            
+            # 恢复笔记
+            if saved_market_analysis is not None or saved_next_action is not None:
+                note = DailyNote.query.filter_by(trade_date=trade_date).first()
+                if note:
+                    if saved_market_analysis is not None:
+                        note.market_analysis = saved_market_analysis
+                    if saved_next_action is not None:
+                        note.next_action = saved_next_action
+                else:
+                    note = DailyNote(
+                        trade_date=trade_date,
+                        market_analysis=saved_market_analysis,
+                        next_action=saved_next_action
+                    )
+                    db.session.add(note)
+                db.session.commit()
         
         service = get_review_task_service()
         task = service.create_task(
@@ -107,16 +130,28 @@ def task_list():
     """获取任务列表"""
     try:
         include_completed = request.args.get('includeCompleted', 'false').lower() == 'true'
-        
+        trade_date = request.args.get('tradeDate', '').strip() or None
+        page = request.args.get('page', 1, type=int)
+        page_size = request.args.get('pageSize', 20, type=int)
+
+        # 限制每页数量，防止过大
+        page_size = min(page_size, 100)
+
         service = get_review_task_service()
-        tasks = service.get_task_list(include_completed)
-        
+        result = service.get_task_list(include_completed, trade_date, page, page_size)
+
         return jsonify({
             'code': 200,
             'message': '操作成功',
-            'data': [t.to_dict_with_summary() for t in tasks]
+            'data': {
+                'items': [t.to_dict_with_summary() for t in result['items']],
+                'total': result['total'],
+                'page': result['page'],
+                'page_size': result['page_size'],
+                'total_pages': result['total_pages']
+            }
         })
-        
+
     except Exception as e:
         return jsonify({'code': 500, 'message': str(e)}), 500
 
@@ -237,10 +272,34 @@ def create_baostock_task():
         
         # 如果存在且需要覆盖，删除旧任务
         if existing_task and overwrite:
+            # 先保存旧任务的笔记（基于交易日期）
+            from models.dailynote import DailyNote
+            old_note = DailyNote.query.filter_by(trade_date=trade_date).first()
+            saved_market_analysis = old_note.market_analysis if old_note else None
+            saved_next_action = old_note.next_action if old_note else None
+            
+            # 删除旧任务及其结果
             from models.reviewresult import ReviewResult
             ReviewResult.query.filter(ReviewResult.task_id == existing_task.id).delete()
             db.session.delete(existing_task)
             db.session.commit()
+            
+            # 恢复笔记
+            if saved_market_analysis is not None or saved_next_action is not None:
+                note = DailyNote.query.filter_by(trade_date=trade_date).first()
+                if note:
+                    if saved_market_analysis is not None:
+                        note.market_analysis = saved_market_analysis
+                    if saved_next_action is not None:
+                        note.next_action = saved_next_action
+                else:
+                    note = DailyNote(
+                        trade_date=trade_date,
+                        market_analysis=saved_market_analysis,
+                        next_action=saved_next_action
+                    )
+                    db.session.add(note)
+                db.session.commit()
         
         service = get_review_task_service()
         
@@ -295,11 +354,125 @@ def create_baostock_task():
         return jsonify({'code': 500, 'message': str(e)}), 500
 
 
+@review_bp.route('/task/baostock/batch', methods=['POST'])
+def create_baostock_batch_tasks():
+    """按日期范围批量创建Baostock复盘任务，每个交易日（周一至周五）各建一个任务并顺序异步执行"""
+    try:
+        from datetime import datetime, timedelta
+        from models.reviewtask import ReviewTask
+
+        data = request.get_json()
+        if not data:
+            return jsonify({'code': 400, 'message': '请求数据不能为空'}), 400
+
+        start_date = data.get('start_date')
+        end_date   = data.get('end_date')
+        stock_filter = data.get('stock_filter', None)
+        overwrite  = data.get('overwrite', False)
+
+        if not start_date or not end_date:
+            return jsonify({'code': 400, 'message': '请指定 start_date 和 end_date'}), 400
+
+        # 生成范围内所有工作日
+        try:
+            d_start = datetime.strptime(start_date, '%Y-%m-%d').date()
+            d_end   = datetime.strptime(end_date,   '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({'code': 400, 'message': '日期格式错误，请使用 YYYY-MM-DD'}), 400
+
+        if d_start > d_end:
+            return jsonify({'code': 400, 'message': '开始日期不能晚于结束日期'}), 400
+
+        # 调用 baostock 查询范围内实际交易日
+        import baostock as bs
+        try:
+            rs = bs.query_trade_dates(start_date=start_date, end_date=end_date)
+            trade_dates = []
+            while (rs.error_code == '0') and rs.next():
+                row = rs.get_row_data()
+                # row[0]=calendar_date, row[1]=is_trading_day ('1'=交易日)
+                if str(row[1]) == '1':
+                    trade_dates.append(row[0])
+        except Exception as e:
+            logger.warning(f"baostock query_trade_dates 失败，降级为工作日过滤: {e}")
+            # 降级：用工作日过滤
+            cur = d_start
+            trade_dates = []
+            while cur <= d_end:
+                if cur.weekday() < 5:
+                    trade_dates.append(cur.strftime('%Y-%m-%d'))
+                cur += timedelta(days=1)
+
+        if not trade_dates:
+            return jsonify({'code': 400, 'message': '所选范围内无交易日'}), 400
+
+        service = get_review_task_service()
+        created_tasks = []
+        skipped_dates = []
+
+        for td in trade_dates:
+            existing = ReviewTask.query.filter_by(trade_date=td, data_source_type='baostock').first()
+            if existing and not overwrite:
+                skipped_dates.append(td)
+                continue
+            if existing and overwrite:
+                from models.reviewresult import ReviewResult
+                ReviewResult.query.filter_by(task_id=existing.id).delete()
+                db.session.delete(existing)
+                db.session.commit()
+
+            task = service.create_task(
+                task_name=f"{td} 日复盘",
+                trade_date=td,
+                review_type='daily',
+                dimensions=[],
+                rules=[],
+                stock_filter=stock_filter,
+                data_source_type='baostock',
+                data_source_name=f"Baostock A股数据 {td}",
+                data_source_desc=f"获取{td}日全A股市场股票列表"
+            )
+            created_tasks.append(task.id)
+
+        # 顺序执行所有新建任务（单个后台线程，避免并发 Baostock 连接冲突）
+        def run_batch(task_ids, app_obj):
+            from services.review_service import ReviewTaskService
+            with app_obj.app_context():
+                svc = ReviewTaskService()
+                for tid in task_ids:
+                    try:
+                        svc.execute_baostock_task(tid)
+                    except Exception as e:
+                        logger.error(f"批量复盘任务 {tid} 执行失败: {e}")
+
+        if created_tasks:
+            from threading import Thread
+            app = current_app._get_current_object()
+            Thread(target=run_batch, args=(created_tasks, app), daemon=True).start()
+
+        return jsonify({
+            'code': 200,
+            'message': f'成功创建 {len(created_tasks)} 个任务，跳过 {len(skipped_dates)} 个已存在日期',
+            'data': {
+                'created': len(created_tasks),
+                'skipped': skipped_dates,
+                'task_ids': created_tasks
+            }
+        })
+
+    except Exception as e:
+        import traceback
+        logger.error(f"批量创建复盘任务失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({'code': 500, 'message': str(e)}), 500
+
+
 @review_bp.route('/task/<int:task_id>/chart', methods=['GET'])
 def task_chart_data(task_id):
     """获取任务图表数据"""
     try:
         from models.reviewresult import ReviewResult
+        from models.reviewtask import ReviewTask
         import json
         
         # 获取该任务的所有结果数据
@@ -445,6 +618,12 @@ def task_chart_data(task_id):
             chart_data['charts']['sectorBar']['labels'] = [s.get('sector', s.get('name', '')) for s in sectors_list[:10]]
             chart_data['charts']['sectorBar']['data'] = [s.get('count', s.get('stockCount', 0)) for s in sectors_list[:10]]
         
+        # 如果 summary 中没有交易日期，则从任务表中补充
+        if not chart_data['summary'].get('tradeDate'):
+            task = ReviewTask.query.get(task_id)
+            if task and task.trade_date:
+                chart_data['summary']['tradeDate'] = task.trade_date
+        
         # 如果 summary 中有数据总量，使用它
         if '数据总量' in chart_data['summary']:
             chart_data['summary']['totalStocks'] = int(chart_data['summary'].get('数据总量', 0))
@@ -467,23 +646,60 @@ def task_chart_data(task_id):
             
             # 从表达式中提取使用的因子代码
             factor_codes_in_expr = []
+            import re
+            var_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
+            exclude_funcs = {'ABS', 'SQRT', 'MAX', 'MIN', 'AVG', 'SUM', 'ROUND', 'POW', 'IF', 'LOG', 
+                           'abs', 'sqrt', 'max', 'min', 'avg', 'sum', 'round', 'pow', 'if', 'log', 'AND', 'OR', 'NOT'}
             if default_expr and default_expr.factors:
                 factor_codes_in_expr = default_expr.factors
             elif default_expr and default_expr.expression:
-                import re
                 # 从表达式中提取因子代码
-                var_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
-                exclude_funcs = {'ABS', 'SQRT', 'MAX', 'MIN', 'AVG', 'SUM', 'ROUND', 'POW', 'IF', 'LOG', 
-                               'abs', 'sqrt', 'max', 'min', 'avg', 'sum', 'round', 'pow', 'if', 'log'}
                 matches = re.findall(var_pattern, default_expr.expression)
                 factor_codes_in_expr = [m for m in matches if m not in exclude_funcs]
             
-            # 只获取表达式中使用的因子定义
-            if factor_codes_in_expr:
+            # 排除 Python 代码计算的因子（这些因子的依赖在代码内处理，不需要展示）
+            python_factors = [f.factor_code for f in FactorDefine.query.filter(
+                FactorDefine.calculation_method == 'python',
+                FactorDefine.factor_code.in_(factor_codes_in_expr)
+            ).all()]
+            factor_codes_in_expr = [f for f in factor_codes_in_expr if f not in python_factors]
+            logger.info(f"📊 初始因子列表（排除Python因子）: {factor_codes_in_expr}")
+            
+            # 递归查找所有依赖的因子（包括表达式因子的依赖）
+            def find_all_dependencies(factor_codes, visited=None):
+                if visited is None:
+                    visited = set(factor_codes)
+                else:
+                    visited.update(factor_codes)
+                
+                # 查找这些因子的表达式依赖
+                new_deps = set()
+                sub_factors = FactorDefine.query.filter(
+                    FactorDefine.factor_code.in_(factor_codes),
+                    FactorDefine.expression.isnot(None),
+                    FactorDefine.calculation_method != 'python'  # 排除 Python 代码计算的因子
+                ).all()
+                
+                for sf in sub_factors:
+                    if sf.expression:
+                        matches = re.findall(var_pattern, sf.expression)
+                        deps = {m for m in matches if m not in exclude_funcs and m not in visited}
+                        new_deps.update(deps)
+                
+                if new_deps:
+                    find_all_dependencies(new_deps, visited)
+                
+                return visited
+            
+            all_needed_factors = find_all_dependencies(factor_codes_in_expr)
+            logger.info(f"📊 表达式因子及其依赖: {all_needed_factors}")
+            
+            # 只获取表达式中使用的因子定义（包括依赖的原子因子）
+            if all_needed_factors:
                 stock_factors = FactorDefine.query.filter(
                     FactorDefine.factor_scope == 'stock',
                     FactorDefine.is_active == True,
-                    FactorDefine.factor_code.in_(factor_codes_in_expr)
+                    FactorDefine.factor_code.in_(all_needed_factors)
                 ).order_by(FactorDefine.factor_code).all()
             else:
                 stock_factors = []
@@ -491,7 +707,9 @@ def task_chart_data(task_id):
             factor_columns = [{
                 'code': f.factor_code,
                 'name': f.factor_name,
-                'source': f.source
+                'source': f.source,
+                'expression': f.expression,
+                'calculation_method': f.calculation_method
             } for f in stock_factors]
             
             chart_data['factorConfig'] = {
@@ -566,6 +784,8 @@ def get_dashboard_data():
                         }
                         for s in sectors_list[:10]
                     ]
+                    # 板块得分列表（按名次排序）
+                    task_info['sectorScores'] = [s.get('score', 0) for s in sectors_list[:10]]
                 except:
                     pass
             
@@ -620,5 +840,114 @@ def get_dashboard_data():
     except Exception as e:
         import traceback
         logger.error(f"获取仪表盘数据失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({'code': 500, 'message': str(e)}), 500
+
+
+# ==================== 每日笔记 API ====================
+
+@review_bp.route('/note/<string:trade_date>', methods=['GET'])
+def get_daily_note(trade_date):
+    """获取指定交易日的笔记"""
+    try:
+        from models.dailynote import DailyNote
+        
+        note = DailyNote.query.filter_by(trade_date=trade_date).first()
+        
+        if not note:
+            return jsonify({
+                'code': 200,
+                'message': '操作成功',
+                'data': None
+            })
+        
+        return jsonify({
+            'code': 200,
+            'message': '操作成功',
+            'data': note.to_dict()
+        })
+        
+    except Exception as e:
+        import traceback
+        logger.error(f"获取每日笔记失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({'code': 500, 'message': str(e)}), 500
+
+
+@review_bp.route('/note', methods=['POST'])
+def save_daily_note():
+    """保存每日笔记"""
+    try:
+        from models.dailynote import DailyNote
+        
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'code': 400, 'message': '请求数据不能为空'}), 400
+        
+        trade_date = data.get('tradeDate') or data.get('trade_date')
+        market_analysis = data.get('marketAnalysis') or data.get('market_analysis')
+        next_action = data.get('nextAction') or data.get('next_action')
+        
+        if not trade_date:
+            return jsonify({'code': 400, 'message': '请指定交易日期'}), 400
+        
+        # 查询是否已存在
+        note = DailyNote.query.filter_by(trade_date=trade_date).first()
+        
+        if note:
+            # 更新
+            if market_analysis is not None:
+                note.market_analysis = market_analysis
+            if next_action is not None:
+                note.next_action = next_action
+        else:
+            # 创建新记录
+            note = DailyNote(
+                trade_date=trade_date,
+                market_analysis=market_analysis,
+                next_action=next_action
+            )
+            db.session.add(note)
+        
+        db.session.commit()
+        
+        return jsonify({
+            'code': 200,
+            'message': '保存成功',
+            'data': note.to_dict()
+        })
+        
+    except Exception as e:
+        import traceback
+        logger.error(f"保存每日笔记失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({'code': 500, 'message': str(e)}), 500
+
+
+@review_bp.route('/note/latest', methods=['GET'])
+def get_latest_note():
+    """获取最近有笔记的交易日信息"""
+    try:
+        from models.dailynote import DailyNote
+        
+        note = DailyNote.query.order_by(DailyNote.trade_date.desc()).first()
+        
+        if not note:
+            return jsonify({
+                'code': 200,
+                'message': '操作成功',
+                'data': None
+            })
+        
+        return jsonify({
+            'code': 200,
+            'message': '操作成功',
+            'data': note.to_dict()
+        })
+        
+    except Exception as e:
+        import traceback
+        logger.error(f"获取最新笔记失败: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({'code': 500, 'message': str(e)}), 500

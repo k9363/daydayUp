@@ -71,6 +71,12 @@ const routes = [
     name: 'ExpressionList',
     component: () => import('@/views/admin/ExpressionList.vue'),
     meta: { title: '表达式配置' }
+  },
+  {
+        path: 'cycle',
+    name: 'CycleManagement',
+    component: () => import('@/views/CycleManagement.vue'),
+    meta: { title: '周期管理' }
   }
 ]
   }

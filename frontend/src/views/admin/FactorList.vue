@@ -33,7 +33,19 @@
               <el-tag v-if="row.calculation_method" type="success">{{ row.calculation_method }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="field_name" label="字段" width="120" />
+          <el-table-column prop="field_name" label="字段" width="80" />
+          <el-table-column prop="days_range" label="天数区间" width="100">
+            <template #default="{ row }">
+              <span v-if="row.days_range">{{ row.days_range }}</span>
+              <span v-else style="color: #909399;">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="days_offset" label="日期偏移" width="90">
+            <template #default="{ row }">
+              <el-tag v-if="row.days_offset > 0" type="warning">-{{ row.days_offset }}日</el-tag>
+              <span v-else style="color: #909399;">-</span>
+            </template>
+          </el-table-column>
           <el-table-column prop="description" label="描述" />
           <el-table-column label="操作" width="150">
             <template #default="{ row }">
@@ -147,32 +159,165 @@
         
         <!-- 计算方法 -->
         <el-form-item v-if="form.source === 'kline'" label="计算方法" prop="calculation_method">
-          <el-select v-model="form.calculation_method" placeholder="选择计算方法">
+          <el-select v-model="form.calculation_method" placeholder="选择计算方法" @change="handleCalculationMethodChange">
             <el-option label="直接取字段值" value="kline_field" />
             <el-option label="排名得分" value="rank" />
             <el-option label="表达式计算" value="expression" />
-            <el-option label="近3日平均成交额" value="avg_3d" />
-            <el-option label="近5日平均成交额" value="avg_5d" />
-            <el-option label="近10日平均成交额" value="avg_10d" />
-            <el-option label="近20日平均成交额" value="avg_20d" />
-            <el-option label="4-20日平均成交额(爆量用)" value="avg_4_20d" />
-            <el-option label="11-30日平均成交额(极限量用)" value="avg_11_30d" />
+            <el-option label="成交额均线" value="turnover_ma" />
           </el-select>
         </el-form-item>
         
-        <!-- 表达式配置 -->
-        <el-form-item v-if="form.source === 'kline' && form.calculation_method === 'expression'" label="表达式" prop="expression">
-          <el-input v-model="form.expression" type="textarea" :rows="3" placeholder="AVG(turnover, 10) - 过去10天平均&#10;IF(amount_rank <= 50, 10, 0) - 条件表达式&#10;close_price - ma5 - 数学运算" />
+        <!-- 成交额均线配置 -->
+        <el-form-item v-if="form.source === 'kline' && form.calculation_method === 'turnover_ma'" label="均线配置" prop="days_range">
+          <div class="ma-config">
+            <el-radio-group v-model="maConfigType" @change="handleMaConfigChange">
+              <el-radio label="recent">最近N天</el-radio>
+              <el-radio label="range">指定区间</el-radio>
+            </el-radio-group>
+            <div class="ma-inputs" style="margin-top: 10px;">
+              <template v-if="maConfigType === 'recent'">
+                <el-input-number v-model="maDays" :min="1" :max="250" @change="updateFactorCode" />
+                <span class="hint">天</span>
+              </template>
+              <template v-else>
+                <el-input-number v-model="maStart" :min="1" :max="250" @change="updateFactorCode" />
+                <span class="hint"> - </span>
+                <el-input-number v-model="maEnd" :min="1" :max="250" @change="updateFactorCode" />
+                <span class="hint">天</span>
+              </template>
+            </div>
+            <div style="margin-top: 5px; color: #909399; font-size: 12px;">
+              预览因子代码: <code>{{ form.factor_code || 'avg_amount_Xd' }}</code>
+            </div>
+          </div>
+        </el-form-item>
+        
+        <!-- 表达式配置：K线+表达式计算 或 数据来源=表达式计算 时都显示完整编辑器 -->
+        <el-form-item v-if="(form.source === 'kline' && form.calculation_method === 'expression') || form.source === 'calculated'" label="表达式" prop="expression">
+          <div class="expr-editor">
+            <!-- 因子提示 -->
+            <div class="factor-hint">提示：点击下方因子按钮可直接插入表达式中</div>
+            <!-- 因子按钮 -->
+            <div class="factor-buttons">
+              <el-button 
+                v-for="f in stockFactors" 
+                :key="f.factor_code"
+                size="small" 
+                type="info"
+                class="factor-btn"
+                @click="insertFactor(f.factor_code)"
+                :title="f.description"
+              >
+                {{ f.factor_code }}
+              </el-button>
+            </div>
+            
+            <!-- 工具栏 -->
+            <div class="expr-toolbar">
+              <el-button-group>
+                <el-button size="small" @click="insertOperator('+')">+</el-button>
+                <el-button size="small" @click="insertOperator('-')">-</el-button>
+                <el-button size="small" @click="insertOperator('*')">×</el-button>
+                <el-button size="small" @click="insertOperator('/')">÷</el-button>
+                <el-button size="small" @click="insertOperator('(')">(</el-button>
+                <el-button size="small" @click="insertOperator(')')">)</el-button>
+              </el-button-group>
+              <el-divider direction="vertical" />
+              <!-- 插入因子按钮 -->
+              <el-dropdown @command="insertFactor" trigger="click">
+                <el-button size="small" type="success">
+                  插入因子 ▼
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu style="max-height: 300px; overflow-y: auto;">
+                    <el-dropdown-item disabled style="font-weight: bold;">股票因子</el-dropdown-item>
+                    <el-dropdown-item v-for="f in stockFactors" :key="f.factor_code" :command="f.factor_code">
+                      {{ f.factor_name }} ({{ f.factor_code }})
+                    </el-dropdown-item>
+                    <el-dropdown-item disabled style="font-weight: bold;">板块因子</el-dropdown-item>
+                    <el-dropdown-item v-for="f in sectorFactors" :key="f.factor_code" :command="f.factor_code">
+                      {{ f.factor_name }} ({{ f.factor_code }})
+                    </el-dropdown-item>
+                    <el-dropdown-item disabled style="font-weight: bold;">大盘因子</el-dropdown-item>
+                    <el-dropdown-item v-for="f in marketFactors" :key="f.factor_code" :command="f.factor_code">
+                      {{ f.factor_name }} ({{ f.factor_code }})
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+              <el-divider direction="vertical" />
+              <!-- 插入字段按钮 -->
+              <el-dropdown @command="insertField" trigger="click">
+                <el-button size="small" type="warning">
+                  插入字段 ▼
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu style="max-height: 200px; overflow-y: auto;">
+                    <el-dropdown-item v-for="f in klineFields" :key="f" :command="f">
+                      {{ f }}
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+              <el-divider direction="vertical" />
+              <el-dropdown @command="insertFunction">
+                <el-button size="small">
+                  函数 ▼
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="IF">IF(条件, 真值, 假值)</el-dropdown-item>
+                    <el-dropdown-item command="ABS">ABS(数值)</el-dropdown-item>
+                    <el-dropdown-item command="SQRT">SQRT(数值)</el-dropdown-item>
+                    <el-dropdown-item command="MAX">MAX(a, b)</el-dropdown-item>
+                    <el-dropdown-item command="MIN">MIN(a, b)</el-dropdown-item>
+                    <el-dropdown-item command="AVG">AVG(a, b)</el-dropdown-item>
+                    <el-dropdown-item command="ROUND">ROUND(数值, 位数)</el-dropdown-item>
+                    <el-dropdown-item command="POW">POW(底数, 指数)</el-dropdown-item>
+                    <el-dropdown-item command="SUM">SUM(a, b, ...)</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+            
+            <!-- 编辑器 -->
+            <el-input
+              ref="exprTextarea"
+              v-model="form.expression"
+              type="textarea"
+              :rows="4"
+              class="expr-textarea"
+              placeholder="使用因子代码或字段名编写表达式，如: avg_amount_3d / avg_amount_4_20d&#10;IF(close_price > ma5, 1, 0) - 条件表达式"
+            />
+          </div>
           <div style="color: #909399; font-size: 12px; margin-top: 5px;">
-            支持函数: AVG(field, days), AVG(field, start, end), IF(cond, true, false), ABS, MAX, MIN, SUM
+            支持函数: AVG(field, days), IF(cond, true, false), ABS, MAX, MIN, SUM, POW
           </div>
         </el-form-item>
         
         <!-- K线字段选择 -->
         <el-form-item v-if="form.source === 'kline'" label="字段选择" prop="field_name">
-          <el-select v-model="form.field_name" placeholder="选择字段" filterable>
-            <el-option v-for="f in klineFields" :key="f" :label="f" :value="f" />
+          <el-select v-model="form.field_name" placeholder="选择字段" filterable @change="handleFieldChange">
+            <el-optgroup v-for="group in klineFieldGroups" :key="group.label" :label="group.label">
+              <el-option v-for="f in group.options" :key="f.value" :label="f.label" :value="f.value" />
+            </el-optgroup>
           </el-select>
+        </el-form-item>
+        
+        <!-- 日期偏移配置 -->
+        <el-form-item v-if="form.source === 'kline'" label="日期偏移" prop="days_offset">
+          <div class="offset-config">
+            <el-input-number v-model="form.days_offset" :min="0" :max="120" :step="1" />
+            <span class="hint">
+              <template v-if="form.days_offset === 0">当日</template>
+              <template v-else-if="form.days_offset === 1">昨日</template>
+              <template v-else-if="form.days_offset === 2">前日</template>
+              <template v-else>前{{ form.days_offset }}日</template>
+            </span>
+            <div class="hint-text" v-if="form.field_name === 'ma5' || form.field_name === 'ma10' || form.field_name === 'ma20'">
+              提示：均线因子会自动根据偏移量计算历史均线
+            </div>
+          </div>
         </el-form-item>
         
         <!-- 因子选择 -->
@@ -182,11 +327,6 @@
               <el-option v-for="f in group.options" :key="f.factor_code" :label="`${f.factor_name} (${f.factor_code})`" :value="f.factor_code" />
             </el-option-group>
           </el-select>
-        </el-form-item>
-        
-        <!-- 表达式 -->
-        <el-form-item v-if="form.source === 'calculated'" label="表达式" prop="expression">
-          <el-input v-model="form.expression" type="textarea" :rows="3" placeholder="如: volume / prev_volume" />
         </el-form-item>
         
         <!-- 聚合方式（板块因子） -->
@@ -256,11 +396,18 @@ export default {
         calculation_method: '',
         filter_condition: '',
         field_name: '',
+        days_range: '',
+        days_offset: 0,
         aggregation: '',
         index_code: '',
         expression: '',
         description: ''
       },
+      // 成交额均线配置
+      maConfigType: 'recent',
+      maDays: 3,
+      maStart: 4,
+      maEnd: 20,
       rules: {
         factor_code: [{ required: true, message: '请输入因子代码', trigger: 'blur' }],
         factor_name: [{ required: true, message: '请输入因子名称', trigger: 'blur' }],
@@ -269,8 +416,44 @@ export default {
       },
       // 下拉选项
       factorOptions: [],
+      // 因子选项（用于表达式编辑）
+      stockFactors: [],
+      sectorFactors: [],
+      marketFactors: [],
       // K线字段
-      klineFields: ['close_price', 'volume', 'turnover', 'pct_change', 'open_price', 'high_price', 'low_price', 'change'],
+      // K线字段分组
+      klineFieldGroups: [
+        {
+          label: '价格类',
+          options: [
+            { value: 'close_price', label: '收盘价' },
+            { value: 'open_price', label: '开盘价' },
+            { value: 'high_price', label: '最高价' },
+            { value: 'low_price', label: '最低价' },
+            { value: 'pct_change', label: '涨跌幅' },
+            { value: 'change', label: '涨跌额' },
+          ]
+        },
+        {
+          label: '量价类',
+          options: [
+            { value: 'volume', label: '成交量' },
+            { value: 'turnover', label: '成交额' },
+          ]
+        },
+        {
+          label: '均线类',
+          options: [
+            { value: 'ma5', label: 'MA5 (5日均线)' },
+            { value: 'ma10', label: 'MA10 (10日均线)' },
+            { value: 'ma20', label: 'MA20 (20日均线)' },
+            { value: 'ma30', label: 'MA30 (30日均线)' },
+            { value: 'ma60', label: 'MA60 (60日均线)' },
+          ]
+        }
+      ],
+      // 兼容旧版本
+      klineFields: ['close_price', 'volume', 'turnover', 'pct_change', 'open_price', 'high_price', 'low_price', 'change', 'ma5', 'ma10', 'ma20'],
       // 指数组
       indexGroups: [
         { label: '主要指数', options: [
@@ -346,6 +529,8 @@ export default {
             { label: '板块因子', options: data.sector || [] },
             { label: '大盘因子', options: data.market || [] }
           ]
+          // 不要用 options 覆盖表格数据：options 只有 factor_code/name/source/field_name，没有 expression、id 等，会导致编辑时表达式不展示
+          // 表格与表达式区的因子列表均使用 loadFactors() 返回的完整数据
         }
       } catch (e) {
         console.error('加载因子选项失败', e)
@@ -369,7 +554,10 @@ export default {
         factor_name: '',
         factor_scope: scope,
         source: '',
+        calculation_method: '',
         field_name: '',
+        days_range: '',
+        days_offset: 0,
         aggregation: '',
         index_code: '',
         expression: '',
@@ -381,6 +569,24 @@ export default {
     handleEdit(row) {
       this.isEdit = true
       this.form = { ...row }
+      
+      // 如果是成交额均线因子，解析 days_range 并回显配置
+      if (row.calculation_method === 'turnover_ma' && row.days_range) {
+        const parts = row.days_range.split('_')
+        if (parts.length === 2) {
+          if (parts[0] === '1') {
+            // 最近N天
+            this.maConfigType = 'recent'
+            this.maDays = parseInt(parts[1])
+          } else {
+            // 指定区间
+            this.maConfigType = 'range'
+            this.maStart = parseInt(parts[0])
+            this.maEnd = parseInt(parts[1])
+          }
+        }
+      }
+      
       this.dialogVisible = true
     },
     
@@ -401,9 +607,127 @@ export default {
     
     handleSourceChange() {
       this.form.field_name = ''
-      this.form.expression = ''
+      // 只有切换到非「表达式计算」时才清空表达式，避免编辑时因 select 触发的 change 把已有表达式清空
+      if (this.form.source !== 'calculated') {
+        this.form.expression = ''
+      }
       this.form.calculation_method = ''
       this.form.filter_condition = ''
+      this.form.days_range = ''
+      this.form.days_offset = 0
+    },
+    
+    // 字段选择变化时自动更新因子代码
+    handleFieldChange(fieldName) {
+      if (!this.isEdit && this.form.source === 'kline') {
+        const offset = this.form.days_offset || 0
+        if (offset > 0 && fieldName) {
+          // 根据字段名和偏移量自动生成因子代码
+          this.form.factor_code = `${fieldName}_y${offset}`
+          this.form.factor_name = `${this.getFieldLabel(fieldName)}前${offset}日`
+        }
+      }
+    },
+    
+    getFieldLabel(fieldName) {
+      for (const group of this.klineFieldGroups) {
+        const found = group.options.find(o => o.value === fieldName)
+        if (found) return found.label
+      }
+      return fieldName
+    },
+    
+    handleCalculationMethodChange() {
+      if (this.form.calculation_method === 'turnover_ma') {
+        // 初始化均线配置
+        this.maConfigType = 'recent'
+        this.maDays = 3
+        this.maStart = 4
+        this.maEnd = 20
+        this.updateFactorCode()
+      }
+    },
+    
+    handleMaConfigChange(type) {
+      this.updateFactorCode()
+    },
+    
+    updateFactorCode() {
+      if (this.form.calculation_method === 'turnover_ma') {
+        if (this.maConfigType === 'recent') {
+          this.form.days_range = `1_${this.maDays}`
+          this.form.factor_code = `avg_amount_${this.maDays}d`
+          this.form.factor_name = `近${this.maDays}日平均成交额`
+        } else {
+          this.form.days_range = `${this.maStart}_${this.maEnd}`
+          this.form.factor_code = `avg_amount_${this.maStart}_${this.maEnd}d`
+          this.form.factor_name = `${this.maStart}-${this.maEnd}日平均成交额`
+        }
+        this.form.field_name = 'turnover'
+      }
+    },
+    
+    // 获取光标位置的辅助方法
+    getTextareaCursorPos(textareaEl) {
+      if (!textareaEl) return this.form.expression?.length || 0
+      if (textareaEl.selectionStart !== undefined) {
+        return textareaEl.selectionStart
+      }
+      return this.form.expression?.length || 0
+    },
+
+    // 在光标位置插入文本
+    insertAtCursor(text) {
+      const textarea = this.$refs.exprTextarea
+      if (!textarea || !textarea.$el) {
+        // 如果没有 ref，直接追加到末尾
+        this.form.expression = (this.form.expression || '') + text
+        return
+      }
+      
+      // 获取 textarea 元素
+      const textareaEl = textarea.$el.querySelector('textarea') || textarea.$el
+      const cursorPos = this.getTextareaCursorPos(textareaEl)
+      const currentExpr = this.form.expression || ''
+      
+      // 在光标位置插入文本
+      this.form.expression = currentExpr.slice(0, cursorPos) + text + currentExpr.slice(cursorPos)
+      
+      // 设置光标位置到插入文本之后
+      this.$nextTick(() => {
+        const newPos = cursorPos + text.length
+        if (textareaEl.setSelectionRange) {
+          textareaEl.focus()
+          textareaEl.setSelectionRange(newPos, newPos)
+        }
+      })
+    },
+    
+    insertFactor(factorCode) {
+      this.insertAtCursor(factorCode)
+    },
+    
+    insertOperator(op) {
+      this.insertAtCursor(op)
+    },
+    
+    insertField(fieldName) {
+      this.insertAtCursor(fieldName)
+    },
+    
+    insertFunction(func) {
+      const funcMap = {
+        'ABS': 'ABS()',
+        'SQRT': 'SQRT()',
+        'MAX': 'MAX(,)',
+        'MIN': 'MIN(,)',
+        'AVG': 'AVG(,)',
+        'ROUND': 'ROUND(,)',
+        'POW': 'POW(,)',
+        'SUM': 'SUM(,)',
+        'IF': 'IF(, , )'
+      }
+      this.insertAtCursor(funcMap[func] || func + '()')
     },
     
     async handleSubmit() {
@@ -479,5 +803,61 @@ export default {
   display: flex;
   gap: 10px;
   align-items: center;
+}
+
+.hint {
+  margin-left: 8px;
+  color: #909399;
+  font-size: 12px;
+}
+
+.hint-text {
+  color: #E6A23C;
+  font-size: 12px;
+  margin-top: 5px;
+}
+
+.offset-config {
+  width: 100%;
+}
+
+.ma-config {
+  width: 100%;
+}
+
+.ma-inputs {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.expr-editor {
+  width: 100%;
+}
+
+.expr-toolbar {
+  margin-bottom: 10px;
+}
+
+.expr-textarea {
+  font-family: monospace;
+}
+
+.factor-hint {
+  color: #909399;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+.factor-buttons {
+  margin-bottom: 10px;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.factor-btn {
+  margin: 3px;
+  font-family: monospace;
+  font-size: 11px;
 }
 </style>

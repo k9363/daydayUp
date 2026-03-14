@@ -46,10 +46,11 @@ def _build_factor_tree(factor_definitions):
         'ma20': 'kline_field',
         'volume_y1': 'kline_field',
         'turnover_y1': 'kline_field',
-        
+
         # 排名因子
         'amount_rank': 'rank',
-        
+        'turnover_rank': 'rank',
+
         # 历史平均因子
         'avg_amount_3d': 'avg',
         'avg_amount_5d': 'avg',
@@ -57,13 +58,16 @@ def _build_factor_tree(factor_definitions):
         'avg_amount_20d': 'avg',
         'avg_amount_4_20d': 'avg',
         'avg_amount_11_30d': 'avg',
-        
+        'avg_amount_4_120d': 'avg',
+
         # 中间表达式因子
         'price_ma5_diff': 'expression',
         'price_ma10_diff': 'expression',
+
+        # 偏离值因子：代码中直接计算（见 factor_service.py），无 expression 字段
     }
     
-    # 定义因子依赖关系
+    # 定义因子依赖关系（无表达式时的默认值，有表达式时从表达式解析）
     factor_dependencies = {
         'avg_amount_3d': ['turnover'],
         'avg_amount_5d': ['turnover'],
@@ -71,18 +75,35 @@ def _build_factor_tree(factor_definitions):
         'avg_amount_20d': ['turnover'],
         'avg_amount_4_20d': ['turnover'],
         'avg_amount_11_30d': ['turnover'],
+        'avg_amount_4_120d': ['turnover'],
         'amount_rank': ['turnover'],
+        'turnover_rank': ['turnover'],
         'volume_y1': ['volume'],
         'turnover_y1': ['turnover'],
         'price_ma5_diff': ['close_price', 'ma5'],
         'price_ma10_diff': ['close_price', 'ma10'],
-        'factor1_rank': ['amount_rank'],
-        'factor2_ma': ['close_price', 'ma5', 'ma10'],
+        'factor1_rank': ['turnover_rank'],
+        'factor2_ma': ['close_price', 'ma5', 'ma10', 'ma20', 'ma20_y1'],
         'factor3_vol': ['volume', 'volume_y1'],
         'factor4_burst': ['avg_amount_3d', 'avg_amount_4_20d'],
         'factor5_extreme': ['avg_amount_10d', 'avg_amount_11_30d'],
         'factor6_trend': ['close_price', 'ma5', 'ma10'],
+
+        # 偏离值因子
+        'deviation_10d': ['close_price', 'ma20'],
+        'deviation_30d': ['close_price', 'ma20'],
+        'remaining_deviation': ['close_price', 'ma20'],
     }
+    
+    # 从表达式中解析出的变量名（因子代码）视为依赖，排除内置函数
+    EXPR_BUILTINS = {'IF', 'ABS', 'MAX', 'MIN', 'SUM', 'AVG', 'SQRT', 'LOG', 'ROUND', 'POW'}
+    
+    def parse_dependencies_from_expression(expr):
+        if not expr or not expr.strip():
+            return None
+        var_names = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', expr)
+        deps = [v for v in var_names if v not in EXPR_BUILTINS]
+        return deps if deps else None
     
     # 因子中文名映射
     factor_name_map = {
@@ -93,6 +114,7 @@ def _build_factor_tree(factor_definitions):
         'ma5': '5日均线',
         'ma10': '10日均线',
         'ma20': '20日均线',
+        'ma20_y1': '昨日20日均线',
         'volume_y1': '昨日成交量',
         'turnover_y1': '昨日成交额',
         'amount_rank': '成交额排名',
@@ -102,6 +124,7 @@ def _build_factor_tree(factor_definitions):
         'avg_amount_20d': '近20日平均成交额',
         'avg_amount_4_20d': '4-20日平均成交额',
         'avg_amount_11_30d': '11-30日平均成交额',
+        'avg_amount_4_120d': '4-120日平均成交额',
         'price_ma5_diff': '股价与5日线差值',
         'price_ma10_diff': '股价与10日线差值',
         'factor1_rank': '成交额权重',
@@ -110,6 +133,11 @@ def _build_factor_tree(factor_definitions):
         'factor4_burst': '爆量',
         'factor5_extreme': '极限量',
         'factor6_trend': '多头趋势',
+
+        # 偏离值因子
+        'deviation_10d': '10日偏离值累计',
+        'deviation_30d': '30日偏离值累计',
+        'remaining_deviation': '剩余偏离值',
     }
     
     # 分类因子
@@ -126,13 +154,20 @@ def _build_factor_tree(factor_definitions):
         else:
             category = method if method else 'expression'
         
+        # 依赖：有表达式则从表达式解析，否则用默认映射
+        deps = parse_dependencies_from_expression(f.expression)
+        if deps is not None:
+            dependencies = deps
+        else:
+            dependencies = factor_dependencies.get(code, [])
+        
         factor_info = {
             'code': code,
             'name': f.factor_name or factor_name_map.get(code, code),
             'method': method,
             'expression': f.expression,
             'description': f.description,
-            'dependencies': factor_dependencies.get(code, []),
+            'dependencies': dependencies,
             'children': []
         }
         
@@ -155,6 +190,9 @@ def _build_factor_tree(factor_definitions):
     expr_factors = categorized_factors.get('expression', [])
     # 过滤掉得分因子（factor1-6）
     intermediate_expr = [f for f in expr_factors if not f['code'].startswith('factor')]
+    # 表达式因子的依赖只保留已定义的因子
+    for ef in expr_factors:
+        ef['dependencies'] = [d for d in ef['dependencies'] if d in factor_info_map]
     
     # 5. 最终得分因子
     score_factors = [f for f in expr_factors if f['code'].startswith('factor')]
@@ -703,22 +741,42 @@ class ReviewTaskService:
             return f"{value:.2f}"
         return str(value)
     
-    def get_task_list(self, include_completed=False):
+    def get_task_list(self, include_completed=False, trade_date=None, page=1, page_size=20):
         """
         获取任务列表
-        
+
         Args:
             include_completed: 是否包含已完成的任务
-        
+            trade_date: 筛选特定日期的任务，格式 YYYY-MM-DD
+            page: 页码，从 1 开始
+            page_size: 每页数量
+
         Returns:
-            list: 任务列表
+            dict: 包含 items 和 total
         """
         query = ReviewTask.query
-        
+
         if not include_completed:
             query = query.filter(ReviewTask.status != 'completed')
-        
-        return query.order_by(ReviewTask.create_time.desc()).all()
+
+        # 按日期筛选
+        if trade_date:
+            query = query.filter(ReviewTask.trade_date == trade_date)
+
+        # 获取总数
+        total = query.count()
+
+        # 分页
+        offset = (page - 1) * page_size
+        tasks = query.order_by(ReviewTask.create_time.desc()).offset(offset).limit(page_size).all()
+
+        return {
+            'items': tasks,
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': (total + page_size - 1) // page_size
+        }
     
     def get_task(self, task_id):
         """
@@ -1011,7 +1069,7 @@ class ReviewTaskService:
 
             # ========== 步骤3: 计算因子并排名 ==========
             logger.info(f"📊 步骤3: 计算因子得分")
-            factor_calculator = get_factor_calculator()
+            from services.factor_service import factor_calculator
             stock_pool = top100_df['stock_code'].tolist()
             factors_df = factor_calculator.calculate_stock_factors(stock_pool, trade_date, db.session)
 
@@ -1024,7 +1082,10 @@ class ReviewTaskService:
 
             # ========== 步骤5: 保存结果 ==========
             logger.info(f"📊 步骤5: 保存分析结果")
-            self._save_review_results(task, factors_df, sector_scores, db.session)
+            # _save_review_results(self, task, all_df, top_df, factors_df, sector_scores, trade_date)
+            # top100_df 包含股票代码、名称、成交额等信息，可以用作 top_df
+            # all_stocks_df 包含所有股票数据，用于获取指数行情
+            self._save_review_results(task, all_stocks_df, top100_df, factors_df, sector_scores, trade_date)
 
             # ========== 步骤6: 更新任务状态 ==========
             task.status = 'completed'
@@ -1032,7 +1093,8 @@ class ReviewTaskService:
             task.row_count = len(factors_df)
 
             # 生成结果摘要
-            top10_stocks = factors_df.nlargest(10, 'composite_score')[['stock_code', 'stock_name', 'composite_score']] if not factors_df.empty else pd.DataFrame()
+            score_col = 'total_score' if 'total_score' in factors_df.columns else 'composite_score'
+            top10_stocks = factors_df.nlargest(10, score_col)[['stock_code', 'stock_name', score_col]] if not factors_df.empty else pd.DataFrame()
             top10_sector_names = sector_scores['sector_name'].head(10).tolist() if not sector_scores.empty else []
             top10_stock_names = top10_stocks['stock_name'].head(3).tolist() if not top10_stocks.empty else []
 
@@ -1415,8 +1477,8 @@ class ReviewTaskService:
             logger.warning(f"⚠️ 历史交易日不足30天，仅有{len(all_dates)}天，无法计算因子5")
             return pd.DataFrame()
         
-        # 取前35个交易日（包括当天）
-        dates_needed = all_dates[:35]
+        # 取前45个交易日（包括当天），确保有足够数据计算 ma20_y1
+        dates_needed = all_dates[:45]
         logger.info(f"🔍 实际交易日范围: {dates_needed[-1]} ~ {dates_needed[0]} (共{len(dates_needed)}天)")
 
         # 查询历史数据
@@ -1504,6 +1566,12 @@ class ReviewTaskService:
                 stock_factors['ma10'] = stock_hist.head(10)['close_price'].mean()
             if len(stock_hist) >= 20:
                 stock_factors['ma20'] = stock_hist.head(20)['close_price'].mean()
+                # ma20_y1: 昨日20日均线（从昨天开始往前20天，不包含今天）
+                # 需要21天数据: head(21).iloc[1:21] = 昨天到第20天前 = 20条数据
+                if len(stock_hist) >= 21:
+                    ma20_y1_data = stock_hist.head(21).iloc[1:21]
+                    stock_factors['ma20_y1'] = ma20_y1_data['close_price'].mean()
+                    logger.info(f"股票 {stock_code}: len={len(stock_hist)}, ma20={stock_factors['ma20']:.2f}, ma20_y1={stock_factors['ma20_y1']:.2f}, ma20_y1数据条数={len(ma20_y1_data)}")
             
             # 计算 amount_rank（成交额排名）
             today_turnovers = today_data.set_index('stock_code')['turnover'].to_dict()
@@ -1514,29 +1582,62 @@ class ReviewTaskService:
             # 计算中间因子：直接从 DataFrame 计算
             stock_hist_asc = stock_hist.sort_values('trade_date', ascending=True)
             
-            # avg_amount_3d: 最近3天平均成交额
-            if len(stock_hist_asc) >= 3:
-                stock_factors['avg_amount_3d'] = stock_hist_asc.tail(3)['turnover'].mean()
-            
-            # avg_amount_5d: 最近5天平均成交额
-            if len(stock_hist_asc) >= 5:
-                stock_factors['avg_amount_5d'] = stock_hist_asc.tail(5)['turnover'].mean()
-            
-            # avg_amount_10d: 最近10天平均成交额
-            if len(stock_hist_asc) >= 10:
-                stock_factors['avg_amount_10d'] = stock_hist_asc.tail(10)['turnover'].mean()
-            
-            # avg_amount_20d: 最近20天平均成交额
-            if len(stock_hist_asc) >= 20:
-                stock_factors['avg_amount_20d'] = stock_hist_asc.tail(20)['turnover'].mean()
-            
-            # avg_amount_4_20d: 第4天到第20天平均成交额 (即第4-20天，不含最近3天)
-            if len(stock_hist_asc) >= 20:
-                stock_factors['avg_amount_4_20d'] = stock_hist_asc.iloc[3:20]['turnover'].mean()
-            
-            # avg_amount_11_30d: 第11天到第30天平均成交额
-            if len(stock_hist_asc) >= 30:
-                stock_factors['avg_amount_11_30d'] = stock_hist_asc.iloc[10:30]['turnover'].mean()
+            # 通用动态计算 avg_amount_* 系列因子
+            # 匹配模式: avg_amount_3d (最近3天), avg_amount_4_20d (第4-20天)
+            for factor_code, factor_def in factor_defs.items():
+                if factor_code.startswith('avg_amount_'):
+                    # 首先尝试使用 days_range 字段（如果存在）
+                    days_range = getattr(factor_def, 'days_range', None)
+                    calculation_method = getattr(factor_def, 'calculation_method', None)
+                    
+                    if days_range and calculation_method == 'turnover_ma':
+                        # 使用 days_range 字段解析天数区间
+                        try:
+                            if '_' in days_range:
+                                parts = days_range.split('_')
+                                start_day = int(parts[0])
+                                end_day = int(parts[1])
+                            else:
+                                start_day = 1
+                                end_day = int(days_range)
+                            days_needed = end_day
+                        except (ValueError, IndexError):
+                            # 回退到从因子代码解析
+                            match = re.match(r'avg_amount_(\d+)(?:_(\d+))?d', factor_code)
+                            if match:
+                                if match.group(2):
+                                    start_day = int(match.group(1))
+                                    end_day = int(match.group(2))
+                                    days_needed = end_day
+                                else:
+                                    start_day = 1
+                                    end_day = int(match.group(1))
+                                    days_needed = end_day
+                            else:
+                                continue
+                    else:
+                        # 从因子代码解析天数区间（兼容旧逻辑）
+                        match = re.match(r'avg_amount_(\d+)(?:_(\d+))?d', factor_code)
+                        if match:
+                            if match.group(2):  # 如 avg_amount_4_20d -> (4, 20)
+                                start_day = int(match.group(1))
+                                end_day = int(match.group(2))
+                                days_needed = end_day
+                            else:  # 如 avg_amount_3d -> (1, 3)
+                                start_day = 1
+                                end_day = int(match.group(1))
+                                days_needed = end_day
+                        else:
+                            continue
+                    
+                    # 计算
+                    if len(stock_hist_asc) >= days_needed:
+                        if start_day == 1:
+                            # 最近N天: avg_amount_3d, avg_amount_5d, avg_amount_120d
+                            stock_factors[factor_code] = stock_hist_asc.tail(end_day)['turnover'].mean()
+                        else:
+                            # 区间: avg_amount_4_20d, avg_amount_11_30d
+                            stock_factors[factor_code] = stock_hist_asc.iloc[start_day-1:end_day]['turnover'].mean()
             
             # 计算价格均线差值
             for factor_code in ['price_ma5_diff', 'price_ma10_diff']:
@@ -1549,17 +1650,24 @@ class ReviewTaskService:
                             'close_price': stock_factors.get('close_price', 0),
                             'ma5': stock_factors.get('ma5', 0),
                             'ma10': stock_factors.get('ma10', 0),
+                            'ma20': stock_factors.get('ma20', 0),
+                            'ma20_y1': stock_factors.get('ma20_y1', 0),
                         }
                         result_val = simpleeval.simple_eval(factor_def.expression, names=context)
                         stock_factors[factor_code] = result_val
                 except Exception as e:
                     logger.warning(f"计算因子 {factor_code} 失败: {e}")
                     stock_factors[factor_code] = 0
-            
+
             # 4. 综合得分因子：使用 expression 计算
             score_factors_expr = {
                 'factor1_rank': 'IF(amount_rank <= 50, 10 - (amount_rank - 1) * 0.2, 0)',
-                'factor2_ma': 'IF(close_price >= ma5, 3, -1) + IF(close_price >= ma10, 2, -0.5)',
+                # 短线趋势新逻辑：
+                # 1. MA5 > MA10 > MA20 (短期均线在中期均线上方) → +2，否则 -0.5
+                # 2. Pt > MA5 (价格在短期均线上方) → +2，否则 -0.5
+                # 3. MA20(t) > MA20(t-1) (中长期均线向上) → +2，否则 -0.5
+                # 注意：simpleeval 使用 Python 语法，需要用小写 and/or
+                'factor2_ma': 'IF(ma5 > ma10 and ma10 > ma20, 2, -0.5) + IF(close_price > ma5, 2, -0.5) + IF(ma20 > ma20_y1, 2, -0.5)',
                 'factor3_vol': 'IF(volume >= volume_y1, 3, -1)',
                 'factor4_burst': '(avg_amount_3d / avg_amount_4_20d) * 2',
                 'factor5_extreme': '(avg_amount_10d / avg_amount_11_30d) * 3',
@@ -1578,6 +1686,8 @@ class ReviewTaskService:
                         'close_price': stock_factors.get('close_price', 0),
                         'ma5': stock_factors.get('ma5', 0),
                         'ma10': stock_factors.get('ma10', 0),
+                        'ma20': stock_factors.get('ma20', 0),
+                        'ma20_y1': stock_factors.get('ma20_y1', 0),
                         'volume': stock_factors.get('volume', 0),
                         'volume_y1': stock_factors.get('volume_y1', 0),
                         'avg_amount_3d': stock_factors.get('avg_amount_3d', 0),
@@ -1623,6 +1733,12 @@ class ReviewTaskService:
                 'factor4_burst': stock_factors.get('factor4_burst', 0),
                 'factor5_extreme': stock_factors.get('factor5_extreme', 0),
                 'factor6_trend': stock_factors.get('factor6_trend', 0),
+
+                # 偏离值因子
+                'deviation_10d': stock_factors.get('deviation_10d', 0),
+                'deviation_30d': stock_factors.get('deviation_30d', 0),
+                'remaining_deviation': stock_factors.get('remaining_deviation', 0),
+
                 'total_score': total_score,
                 'close': stock_factors.get('close_price', 0),
                 'volume': stock_factors.get('volume', 0),
@@ -1632,6 +1748,7 @@ class ReviewTaskService:
                 'ma5': round(stock_factors.get('ma5', 0), 2) if stock_factors.get('ma5') else None,
                 'ma10': round(stock_factors.get('ma10', 0), 2) if stock_factors.get('ma10') else None,
                 'ma20': round(stock_factors.get('ma20', 0), 2) if stock_factors.get('ma20') else None,
+                'ma20_y1': round(stock_factors.get('ma20_y1', 0), 2) if stock_factors.get('ma20_y1') else None,
                 'volume_y1': round(stock_factors.get('volume_y1', 0), 2) if stock_factors.get('volume_y1') else None,
                 'turnover_y1': round(stock_factors.get('turnover_y1', 0), 2) if stock_factors.get('turnover_y1') else None,
                 'amount_rank': stock_factors.get('amount_rank', 999),
@@ -1863,7 +1980,10 @@ class ReviewTaskService:
         ]
         
         # 从 all_df 中获取指数数据
-        index_data = all_df[all_df['stock_code'].isin(INDEX_CODES)] if not all_df.empty else pd.DataFrame()
+        if all_df is not None and not all_df.empty:
+            index_data = all_df[all_df['stock_code'].isin(INDEX_CODES)]
+        else:
+            index_data = pd.DataFrame()
         
         # 批量查询指数元数据（补充名称为1的）
         index_codes = index_data['stock_code'].tolist() if not index_data.empty else []
@@ -2065,18 +2185,24 @@ class ReviewTaskService:
             circulate_mv = metadata.get('circulate_market_value', 0)
 
             # ========== 动态获取因子列 ==========
-            # 获取所有配置的股票因子定义
+            # 只获取表达式中使用的因子，而不是所有 active 的因子
             try:
-                from models.factor import FactorDefine
-                stock_factors = FactorDefine.query.filter(
-                    FactorDefine.factor_scope == 'stock',
-                    FactorDefine.is_active == True
-                ).all()
-                factor_codes = [f.factor_code for f in stock_factors]
-                logger.info(f"🔍 获取到因子代码: {factor_codes}, 总数={len(factor_codes)}")
+                from models.expression import ScoreExpression
+                score_expr = ScoreExpression.query.filter_by(
+                    scope='stock',
+                    is_default=True,
+                    is_active=True
+                ).first()
+                if score_expr and score_expr.factors:
+                    factor_codes = score_expr.factors
+                else:
+                    factor_codes = []
+                logger.info(f"🔍 表达式使用的因子: {factor_codes}")
+                logger.info(f"🔍 factors_df 列: {list(factors_df.columns)}")
+                logger.info(f"🔍 factors_df 前3行: {factors_df.head(3)[['stock_code', 'factor1_rank', 'factor2_ma', 'factor3_vol', 'factor4_burst']].to_dict()}")
             except Exception as e:
-                logger.warning(f"获取因子定义失败: {e}")
-                factor_codes = []  # 如果失败使用空列表
+                logger.warning(f"获取表达式因子失败: {e}")
+                factor_codes = []
             
             # 构建动态因子数据
             stock_data = {
@@ -2095,7 +2221,8 @@ class ReviewTaskService:
             
             # 添加因子详情需要的字段（与 factorTree 中的字段名对应）
             
-            stock_data['close_price'] = float(row.get('close', 0))  # close_price 字段
+            stock_data['close'] = float(row.get('close_price', 0))
+            stock_data['close_price'] = float(row.get('close_price', 0))
             stock_data['volume'] = float(row.get('volume', 0)) if pd.notna(row.get('volume', 0)) else 0
             stock_data['turnover'] = float(row.get('turnover', 0)) if pd.notna(row.get('turnover', 0)) else 0
             stock_data['volume_y1'] = float(row.get('volume_y1', 0)) if pd.notna(row.get('volume_y1', 0)) else 0
@@ -2104,6 +2231,7 @@ class ReviewTaskService:
             stock_data['ma10'] = float(row.get('ma10', 0)) if pd.notna(row.get('ma10', 0)) else 0
             stock_data['ma20'] = float(row.get('ma20', 0)) if pd.notna(row.get('ma20', 0)) else 0
             stock_data['amount_rank'] = float(row.get('amount_rank', 999)) if pd.notna(row.get('amount_rank', 999)) else 999
+            stock_data['turnover_rank'] = float(row.get('turnover_rank', 999)) if pd.notna(row.get('turnover_rank', 999)) else 999
             stock_data['avg_amount_3d'] = float(row.get('avg_3d_turnover', 0)) if pd.notna(row.get('avg_3d_turnover', 0)) else 0
             stock_data['avg_amount_5d'] = float(row.get('avg_5d_turnover', 0)) if pd.notna(row.get('avg_5d_turnover', 0)) else 0
             stock_data['avg_amount_10d'] = float(row.get('avg_10d_turnover', 0)) if pd.notna(row.get('avg_10d_turnover', 0)) else 0
@@ -2111,8 +2239,19 @@ class ReviewTaskService:
             stock_data['avg_amount_4_20d'] = float(row.get('avg_5_20d_turnover', 0)) if pd.notna(row.get('avg_5_20d_turnover', 0)) else 0
             stock_data['avg_amount_11_30d'] = float(row.get('avg_11_30d_turnover', 0)) if pd.notna(row.get('avg_11_30d_turnover', 0)) else 0
             
-            # 添加动态因子列
-            for fc in factor_codes:
+            # 添加动态因子列 - 包括所有依赖的原子因子
+            # 从因子表达式依赖中获取所有需要的因子
+            all_needed_factors = set(factor_codes)
+            
+            # 添加所有在 factors_df 中的因子列（除了基础字段）
+            kline_fields = {'stock_code', 'stock_name', 'close_price', 'volume', 'turnover', 
+                          'pct_change', 'change_percent', 'close', 'total_score'}
+            for col in factors_df.columns:
+                if col not in kline_fields:
+                    all_needed_factors.add(col)
+            
+            # 保存所有需要的因子
+            for fc in all_needed_factors:
                 if fc in row.index:
                     val = row.get(fc, 0)
                     stock_data[fc] = float(val) if pd.notna(val) else 0
@@ -2194,14 +2333,31 @@ class ReviewTaskService:
             }, ensure_ascii=False)
             results.append(sector_result)
 
-        # 5. 因子树形结构 - 保存所有因子的依赖关系
+        # 5. 因子树形结构 - 保存表达式中使用的因子的依赖关系
         try:
             from models.factor import FactorDefine
-            # 获取所有股票因子定义
+            from models.expression import ScoreExpression
+            
+            # 获取表达式中使用的因子列表
+            score_expr = ScoreExpression.query.filter_by(
+                scope='stock',
+                is_default=True,
+                is_active=True
+            ).first()
+            
+            if score_expr and score_expr.factors:
+                factor_codes_in_expr = score_expr.factors
+            else:
+                factor_codes_in_expr = []
+            
+            # 只获取表达式中使用的因子定义
             all_stock_factors = FactorDefine.query.filter(
                 FactorDefine.factor_scope == 'stock',
-                FactorDefine.is_active == True
+                FactorDefine.is_active == True,
+                FactorDefine.factor_code.in_(factor_codes_in_expr)
             ).all()
+            
+            logger.info(f"🔍 因子树只显示表达式中的因子: {factor_codes_in_expr}")
             
             # 构建因子依赖树
             factor_tree = _build_factor_tree(all_stock_factors)

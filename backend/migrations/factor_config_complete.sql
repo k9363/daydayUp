@@ -28,6 +28,21 @@ REPLACE INTO `factor_define` (`factor_code`, `factor_name`, `factor_scope`, `sou
 
 -- 历史平均成交额因子 (使用聚合计算方法)
 ('avg_amount_3d', '近3日平均成交额', 'stock', 'kline', 'turnover', 'avg_3d', NULL, '最近3个交易日平均成交额', 1),
+
+-- =====================================================
+-- 得分因子定义 (calculated类型，使用表达式)
+-- =====================================================
+-- 成交额排名因子
+('factor1_rank', '成交额排名得分', 'stock', 'calculated', NULL, 'expression', 'IF(amount_rank <= 10, 10, IF(amount_rank <= 20, 8, IF(amount_rank <= 30, 6, IF(amount_rank <= 50, 4, IF(amount_rank <= 100, 2, 0)))))', '成交额排名前10得10分，前20得8分，前30得6分，前50得4分，前100得2分', 1),
+
+-- 短线趋势因子 (均线位置)
+('factor2_ma', '短线趋势', 'stock', 'calculated', NULL, 'expression', 'IF(close_price > ma5, 3, -1) + IF(close_price > ma10, 2, -0.5)', '股价在五日线上+3否则-1，在10日线上加2否则-0.5', 1),
+
+-- 昨日同比因子
+('factor3_vol', '昨日同比', 'stock', 'calculated', NULL, 'expression', 'IF(volume >= volume_y1, 3, -1)', '成交量大于等于昨日加3，否则减1', 1),
+
+-- 爆量因子
+('factor4_burst', '爆量', 'stock', 'calculated', NULL, 'expression', 'IF(avg_amount_3d >= avg_amount_4_20d, 3, -1)', '近3日平均成交额大于4-20日平均加3，否则减1', 1),
 ('avg_amount_5d', '近5日平均成交额', 'stock', 'kline', 'turnover', 'avg_5d', NULL, '最近5个交易日平均成交额', 1),
 ('avg_amount_10d', '近10日平均成交额', 'stock', 'kline', 'turnover', 'avg_10d', NULL, '最近10个交易日平均成交额', 1),
 ('avg_amount_20d', '近20日平均成交额', 'stock', 'kline', 'turnover', 'avg_20d', NULL, '最近20个交易日平均成交额', 1),
@@ -61,12 +76,12 @@ REPLACE INTO `factor_define` (`factor_code`, `factor_name`, `factor_scope`, `sou
 -- 使用原子因子组合计算最终得分
 -- =====================================================
 REPLACE INTO `score_expression` (`expression_name`, `scope`, `factors`, `expression`, `top_n`, `is_default`, `is_active`, `description`) VALUES
--- 股票得分表达式: 使用6个因子
-('股票综合得分', 'stock', 
- '["factor1_rank", "factor2_ma", "factor3_vol", "factor4_burst", "factor5_extreme", "factor6_trend", "close_price", "amount_rank"]',
- 'factor1_rank + factor2_ma + factor3_vol + factor4_burst + factor5_extreme + factor6_trend',
- NULL, 1, 1, 
- '成交额权重+短线趋势+昨日同比+爆量+极限量+多头趋势'),
+-- 股票得分表达式: 使用得分因子 + 依赖的原子因子
+('股票综合得分', 'stock',
+ '["factor1_rank", "factor2_ma", "factor3_vol", "factor4_burst", "remaining_deviation", "amount_rank"]',
+ 'factor1_rank + factor2_ma + factor3_vol + factor4_burst + remaining_deviation * 0.1',
+ NULL, 1, 1,
+ '成交额权重+短线趋势+昨日同比+爆量+剩余偏离值'),
 
 -- 板块得分表达式
 ('板块综合得分', 'sector', 

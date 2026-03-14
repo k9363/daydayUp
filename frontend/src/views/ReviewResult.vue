@@ -25,8 +25,50 @@
 
     <!-- 数据内容 -->
     <div v-else-if="chartData" class="content">
+      <!-- 周期信息 -->
+      <el-card shadow="hover" class="cycle-info-card" v-if="cycleInfo">
+        <div class="cycle-info">
+          <div class="cycle-title">{{ cycleInfo.cycle?.title }}</div>
+          <div class="cycle-period">
+            <el-tag :type="getPeriodTypeTag(cycleInfo.sub_period?.period_type)">
+              {{ getPeriodTypeName(cycleInfo.sub_period?.period_type) }}
+            </el-tag>
+            <span class="cycle-date">{{ cycleInfo.trade_date }}</span>
+          </div>
+          <div class="cycle-features" v-if="cycleInfo.cycle?.features">
+            {{ cycleInfo.cycle?.features }}
+          </div>
+        </div>
+      </el-card>
+
+      <!-- 每日笔记区域 -->
+      <el-card shadow="hover" class="note-card">
+        <template #header>
+          <div class="card-header">
+            <span>每日笔记</span>
+            <el-button type="primary" link @click="saveNote" :loading="noteSaving">
+              <el-icon><DocumentChecked /></el-icon>
+              保存笔记
+            </el-button>
+          </div>
+        </template>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <div class="note-section">
+              <div class="note-label">大盘分析</div>
+              <div ref="marketAnalysisEditor" class="rich-editor"></div>
+            </div>
+          </el-col>
+          <el-col :span="12">
+            <div class="note-section">
+              <div class="note-label">明日操作</div>
+              <div ref="nextActionEditor" class="rich-editor"></div>
+            </div>
+          </el-col>
+        </el-row>
+      </el-card>
       <!-- 大盘指数 + 主要指数行情 一行展示 -->
-      <el-row :gutter="12" v-if="indexData.length > 0 || Object.keys(marketData).length > 0">
+      <el-row :gutter="12" class="market-row" v-if="indexData.length > 0 || Object.keys(marketData).length > 0">
         <!-- 大盘指数 -->
         <el-col :span="8" v-if="Object.keys(marketData).length > 0">
           <el-card shadow="hover" class="market-card">
@@ -41,9 +83,31 @@
             
             <!-- 综合得分 -->
             <div class="market-score">
-              <div class="score-value">{{ marketData['大盘综合得分'] ? Number(marketData['大盘综合得分']).toFixed(3) : '0.000' }}</div>
+              <div class="score-value" :class="Number(marketData['大盘综合得分']) >= 0 ? 'positive' : 'negative'">
+                {{ marketData['大盘综合得分'] ? Number(marketData['大盘综合得分']).toFixed(3) : '0.000' }}
+              </div>
               <div class="score-label">综合得分</div>
             </div>
+
+            <!-- 子因子列表 -->
+            <template v-if="marketKeyFactors.length > 0">
+              <el-divider style="margin: 10px 0" />
+              <el-row :gutter="8">
+                <el-col
+                  v-for="factor in marketKeyFactors"
+                  :key="factor.name"
+                  :span="12"
+                  class="key-factor-col"
+                >
+                  <div class="key-factor-item">
+                    <div class="key-factor-value" :class="factor.value >= 0 ? 'positive' : 'negative'">
+                      {{ factor.value >= 0 ? '+' : '' }}{{ Number(factor.value).toFixed(2) }}
+                    </div>
+                    <div class="key-factor-name">{{ factor.name }}</div>
+                  </div>
+                </el-col>
+              </el-row>
+            </template>
           </el-card>
         </el-col>
 
@@ -53,22 +117,22 @@
             <template #header>
               <span>主要指数行情</span>
             </template>
-            <el-table :data="indexData" stripe size="small">
-              <el-table-column prop="name" label="指数名称" width="90" />
-              <el-table-column prop="code" label="代码" width="80" />
-              <el-table-column label="收盘价" width="80" align="right">
+            <el-table :data="indexData" stripe size="small" style="width: 100%">
+              <el-table-column prop="name" label="指数名称" min-width="90" />
+              <el-table-column prop="code" label="代码" min-width="80" />
+              <el-table-column label="收盘价" min-width="80" align="right">
                 <template #default="{ row }">
                   {{ row.close.toFixed(2) }}
                 </template>
               </el-table-column>
-              <el-table-column label="涨跌幅" width="80" align="center">
+              <el-table-column label="涨跌幅" min-width="80" align="center">
                 <template #default="{ row }">
                   <span :class="row.changePercent >= 0 ? 'positive' : 'negative'">
                     {{ row.changePercent >= 0 ? '+' : '' }}{{ row.changePercent.toFixed(2) }}%
                   </span>
                 </template>
               </el-table-column>
-              <el-table-column label="成交额(亿)" width="90" align="right">
+              <el-table-column label="成交额(亿)" min-width="100" align="right">
                 <template #default="{ row }">
                   {{ formatAmount(row.amount || row.turnover || 0) }}
                 </template>
@@ -103,20 +167,19 @@
             </template>
           </el-table-column>
           <el-table-column prop="sector" label="所属板块" min-width="100" />
-          <el-table-column label="标签" min-width="120">
+          <el-table-column label="标签" min-width="150">
             <template #default="{ row }">
-              <div v-if="stockTags[row.code] && stockTags[row.code].length > 0">
+              <div v-if="stockTags[row.code] && stockTags[row.code].length > 0" class="stock-tag-list">
                 <el-tag
-                  v-for="tag in stockTags[row.code].slice(0, 2)"
+                  v-for="tag in stockTags[row.code]"
                   :key="tag.id"
                   :color="tag.color"
                   :style="{ color: getTagTextColor(tag.color) }"
                   size="small"
+                  closable
+                  @close.stop="removeStockTagDirect(row.code, tag)"
                 >
                   {{ tag.name }}
-                </el-tag>
-                <el-tag v-if="stockTags[row.code].length > 2" type="info" size="small">
-                  +{{ stockTags[row.code].length - 2 }}
                 </el-tag>
               </div>
               <span v-else class="no-tag">无</span>
@@ -355,19 +418,40 @@
       >
         <!-- 标签列表 -->
         <div class="tag-management">
-          <div class="section-title">选择标签：</div>
+          <div class="section-title">选择标签：<span class="tag-hint">点击标签切换关联（已关联→点击解除，未关联→点击添加）；悬停显示编辑/删除</span></div>
           <div class="tag-list">
-            <el-tag
+            <div
               v-for="tag in allTags"
               :key="tag.id"
-              :color="tag.color"
-              :style="{ color: getTagTextColor(tag.color) }"
-              :effect="stockTags[currentTagStock?.code]?.some(t => t.id === tag.id) ? 'dark' : 'plain'"
-              class="selectable-tag"
-              @click="toggleStockTag(tag)"
+              class="tag-item-wrap"
             >
-              {{ tag.name }}
-            </el-tag>
+              <!-- 正常展示模式 -->
+              <template v-if="editingTagId !== tag.id">
+                <el-tag
+                  :color="tag.color"
+                  :style="{ color: getTagTextColor(tag.color) }"
+                  :effect="stockTags[currentTagStock?.code]?.some(t => t.id === tag.id) ? 'dark' : 'plain'"
+                  class="selectable-tag"
+                  @click="toggleStockTag(tag)"
+                >
+                  {{ tag.name }}
+                </el-tag>
+                <span class="tag-actions">
+                  <el-icon class="tag-action-btn edit-btn" @click.stop="startEditTag(tag)"><Edit /></el-icon>
+                  <el-icon class="tag-action-btn delete-btn" @click.stop="handleDeleteTag(tag)"><Delete /></el-icon>
+                </span>
+              </template>
+
+              <!-- 内联编辑模式 -->
+              <template v-else>
+                <div class="tag-edit-form">
+                  <el-input v-model="editTagForm.name" size="small" style="width: 120px" />
+                  <el-color-picker v-model="editTagForm.color" size="small" />
+                  <el-icon class="tag-action-btn confirm-btn" @click.stop="confirmEditTag(tag)"><Check /></el-icon>
+                  <el-icon class="tag-action-btn cancel-btn" @click.stop="cancelEditTag()"><Close /></el-icon>
+                </div>
+              </template>
+            </div>
           </div>
           
           <el-divider />
@@ -394,12 +478,15 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed, nextTick, watch } from 'vue'
+import { ref, onMounted, computed, nextTick, watch, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, Grid, Monitor, Connection, Trophy } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { Refresh, Grid, Monitor, Connection, Trophy, DocumentChecked, Edit, Delete, Check, Close } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
-import { getSectorStocks, getTags, addTag, addStockTag, removeStockTag, getBatchStockTags } from '@/api'
+import { getSectorStocks, getTags, addTag, updateTag, deleteTag, addStockTag, removeStockTag, getBatchStockTags, getDailyNote, saveDailyNote, getCycleByDate } from '@/api'
+import 'quill/dist/quill.snow.css'
+
+let Quill = null
 
 const route = useRoute()
 const router = useRouter()
@@ -415,6 +502,40 @@ const currentStock = ref(null)
 
 // 大盘指数详情弹窗
 const showMarketDetailDialog = ref(false)
+
+// 富文本编辑器相关
+const marketAnalysisEditor = ref(null)
+const nextActionEditor = ref(null)
+let marketAnalysisQuill = null
+let nextActionQuill = null
+const noteSaving = ref(false)
+const currentTradeDate = ref('')
+
+// 周期信息
+const cycleInfo = ref(null)
+
+const periodTypeMap = {
+  chaos: { name: '混沌', type: 'warning' },
+  rise: { name: '主升', type: 'success' },
+  oscillation: { name: '震荡', type: 'primary' },
+  decline: { name: '退潮', type: 'danger' }
+}
+
+const getPeriodTypeName = (type) => periodTypeMap[type]?.name || type || ''
+const getPeriodTypeTag = (type) => periodTypeMap[type]?.type || 'info'
+
+// 加载周期信息
+const loadCycleInfo = async (tradeDate) => {
+  if (!tradeDate) return
+  try {
+    const res = await getCycleByDate(tradeDate)
+    if (res.code === 200 && res.data) {
+      cycleInfo.value = res.data
+    }
+  } catch (e) {
+    console.log('该交易日暂无周期信息')
+  }
+}
 
 const pieChartRef = ref(null)
 const barChartRef = ref(null)
@@ -439,6 +560,8 @@ const newTagForm = ref({
   name: '',
   color: '#409EFF'
 })
+const editingTagId = ref(null)
+const editTagForm = ref({ name: '', color: '#409EFF' })
 
 // 计算属性
 const summary = computed(() => chartData.value?.summary || {})
@@ -516,6 +639,19 @@ const marketFactorTreeData = computed(() => {
   return result
 })
 
+// 大盘直接子因子（填充留白）
+const marketKeyFactors = computed(() => {
+  if (!marketDetail.value?.factors) return []
+  const factors = marketDetail.value.factors
+  const root = factors['market_score']
+  if (!root) return []
+  return (root.dependencies || []).map(code => {
+    const f = factors[code]
+    if (!f) return null
+    return { name: f.factor_name || code, value: f.value }
+  }).filter(Boolean)
+})
+
 // 动态因子配置
 const factorConfig = computed(() => chartData.value?.factorConfig || { columns: [], expression: '', expressionName: '' })
 
@@ -534,22 +670,49 @@ const treeVisualProps = {
   label: 'name'
 }
 
+// 从表达式中提取因子代码列表
+const getFactorCodesFromExpression = (expr) => {
+  if (!expr) return []
+  // 匹配变量名（字母开头，后面可以是字母数字下划线）
+  const matches = expr.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || []
+  // 排除常见函数名
+  const excludeFuncs = ['ABS', 'SQRT', 'MAX', 'MIN', 'AVG', 'SUM', 'ROUND', 'POW', 'IF', 'LOG',
+    'abs', 'sqrt', 'max', 'min', 'avg', 'sum', 'round', 'pow', 'if', 'log', 'AND', 'OR']
+  return [...new Set(matches.filter(m => !excludeFuncs.includes(m)))]
+}
+
 // 股票因子树数据 - 真正的树形结构（得分因子 -> 中间因子 -> 数据源）
+// 根据 factorConfig 动态构建股票因子树（包括依赖的原子因子）
 const stockFactorTreeData = computed(() => {
   if (!factorTree.value || !factorTree.value.factors || !currentStock.value) return []
   
   const stock = currentStock.value
-  const levels = factorTree.value.factors
   
-  // 构建代码到因子信息的映射
-  const factorMap = {}
+  // 从 factorConfig.columns 获取所有因子定义（包括依赖的原子因子）
+  const allFactorDefs = factorConfig.value.columns || []
+  console.log('所有因子定义:', allFactorDefs)
+  
+  // 构建因子代码到定义的映射
+  const factorDefMap = {}
+  for (const f of allFactorDefs) {
+    factorDefMap[f.code] = f
+  }
+  
+  // 从 levels 获取因子值信息
+  const levels = factorTree.value.factors
+  const levelFactorMap = {}
   for (const level of levels) {
-    for (const f of level.factors) {
-      factorMap[f.code] = {
-        ...f,
-        level: level.level,
-        levelName: level.levelName
-      }
+    for (const f of (level.factors || [])) {
+      levelFactorMap[f.code] = { ...f, level: level.level, levelName: level.levelName }
+    }
+  }
+  
+  // 合并两个映射
+  const mergedFactorMap = {}
+  for (const code of Object.keys(factorDefMap)) {
+    mergedFactorMap[code] = {
+      ...(levelFactorMap[code] || {}),
+      ...factorDefMap[code]
     }
   }
   
@@ -559,79 +722,119 @@ const stockFactorTreeData = computed(() => {
     return val !== undefined && val !== null ? parseFloat(val) : undefined
   }
   
-  // 去重：记录已处理的因子
-  const processedCodes = new Set()
-  
-  // 第三层：综合得分因子
-  const scoreFactors = levels.find(l => l.level === 3)?.factors || []
-  const result = []
-  
-  for (const sf of scoreFactors) {
-    // 跳过已处理的因子
-    if (processedCodes.has(sf.code)) continue
-    processedCodes.add(sf.code)
+  // 递归查找依赖（基于 expression）
+  const findDeps = (code, visited = new Set()) => {
+    if (visited.has(code)) return []
+    visited.add(code)
     
-    const scoreNode = {
-      id: `score-${sf.code}`,
-      name: sf.name,
-      code: sf.code,
-      value: getValue(sf.code),
-      expression: sf.expression,
+    const deps = []
+    const factor = mergedFactorMap[code]
+    if (!factor || !factor.expression) return deps
+    
+    // 从表达式中提取依赖的因子代码
+    const depCodes = getFactorCodesFromExpression(factor.expression)
+    for (const depCode of depCodes) {
+      if (depCode === code) continue
+      if (mergedFactorMap[depCode]) {
+        deps.push(depCode)
+        // 递归查找更深层的依赖
+        const subDeps = findDeps(depCode, new Set(visited))
+        deps.push(...subDeps)
+      }
+    }
+    return [...new Set(deps)]
+  }
+  
+  // 获取表达式中使用的因子代码
+  const expression = factorConfig.value.expression || ''
+  const scoreFactorCodes = getFactorCodesFromExpression(expression)
+  
+  // 为每个得分因子构建树
+  const result = []
+  for (const code of scoreFactorCodes) {
+    const factor = mergedFactorMap[code]
+    if (!factor) continue
+    
+    // 获取所有依赖
+    const allDeps = findDeps(code)
+    
+    // 构建根节点
+    const rootNode = {
+      id: `root-${code}`,
+      name: factor.name || code,
+      code: code,
+      value: getValue(code),
+      expression: factor.expression,
       level: 3,
       levelClass: 'level-3',
       children: []
     }
     
-    // 第二层：中间计算因子
-    if (sf.dependencies) {
-      for (const dep of sf.dependencies) {
-        const depFactor = factorMap[dep]
-        if (!depFactor) continue
-        
-        // 去重
-        if (processedCodes.has(dep)) continue
-        processedCodes.add(dep)
-        
+    // 添加直接依赖的因子（第二层）
+    for (const depCode of allDeps) {
+      const depFactor = mergedFactorMap[depCode]
+      if (!depFactor) continue
+      
+      // 检查是否是顶层得分因子的直接依赖（即表达式中直接使用的因子）
+      const isDirectDep = factor.expression && factor.expression.includes(depCode)
+      
+      if (isDirectDep) {
         const depNode = {
-          id: `dep-${sf.code}-${dep}`,
-          name: depFactor.name,
-          code: depFactor.code,
-          value: getValue(depFactor.code),
+          id: `dep-${code}-${depCode}`,
+          name: depFactor.name || depCode,
+          code: depCode,
+          value: getValue(depCode),
           expression: depFactor.expression,
           level: 2,
           levelClass: 'level-2',
           children: []
         }
         
-        // 第一层：数据源
-        if (depFactor.dependencies) {
-          for (const source of depFactor.dependencies) {
-            const sourceFactor = factorMap[source]
-            if (!sourceFactor) continue
-            
-            // 去重
-            if (processedCodes.has(source)) continue
-            processedCodes.add(source)
-            
-            depNode.children.push({
-              id: `source-${dep}-${source}`,
-              name: sourceFactor.name,
-              code: sourceFactor.code,
-              value: getValue(sourceFactor.code),
-              level: 1,
-              levelClass: 'level-1',
-              isDependency: true
-            })
+        // 添加基础数据因子（第三层）- 没有 expression 的因子
+        for (const [baseCode, baseFactor] of Object.entries(mergedFactorMap)) {
+          if (baseCode === code || baseCode === depCode) continue
+          if (!baseFactor.expression && baseFactor.calculation_method) {
+            // 检查这个基础因子是否被依赖
+            if (depFactor.expression && depFactor.expression.includes(baseCode)) {
+              depNode.children.push({
+                id: `base-${depCode}-${baseCode}`,
+                name: baseFactor.name || baseCode,
+                code: baseCode,
+                value: getValue(baseCode),
+                level: 1,
+                levelClass: 'level-1',
+                children: []
+              })
+            }
           }
         }
         
-        scoreNode.children.push(depNode)
+        rootNode.children.push(depNode)
       }
     }
     
-    result.push(scoreNode)
+    // 如果没有子节点，尝试添加基础因子
+    if (rootNode.children.length === 0) {
+      for (const [baseCode, baseFactor] of Object.entries(mergedFactorMap)) {
+        if (baseCode === code) continue
+        if (!baseFactor.expression && baseFactor.calculation_method) {
+          rootNode.children.push({
+            id: `base-${code}-${baseCode}`,
+            name: baseFactor.name || baseCode,
+            code: baseCode,
+            value: getValue(baseCode),
+            level: 1,
+            levelClass: 'level-1',
+            children: []
+          })
+        }
+      }
+    }
+    
+    result.push(rootNode)
   }
   
+  console.log('股票因子树:', result)
   return result
 })
 
@@ -762,6 +965,17 @@ const openTagDialog = async (stock) => {
   await loadBatchStockTags([stock.code])
 }
 
+// 直接从股票行删除标签关联
+const removeStockTagDirect = async (stockCode, tag) => {
+  try {
+    await removeStockTag(stockCode, tag.id)
+    stockTags.value[stockCode] = stockTags.value[stockCode].filter(t => t.id !== tag.id)
+    ElMessage.success(`已移除标签「${tag.name}」`)
+  } catch (e) {
+    ElMessage.error('移除标签失败')
+  }
+}
+
 // 切换股票的标签
 const toggleStockTag = async (tag) => {
   if (!currentTagStock.value) return
@@ -781,6 +995,63 @@ const toggleStockTag = async (tag) => {
     }
   } catch (error) {
     console.error('更新标签失败:', error)
+  }
+}
+
+// 开始编辑标签
+const startEditTag = (tag) => {
+  editingTagId.value = tag.id
+  editTagForm.value = { name: tag.name, color: tag.color }
+}
+
+// 取消编辑
+const cancelEditTag = () => {
+  editingTagId.value = null
+}
+
+// 确认编辑标签
+const confirmEditTag = async (tag) => {
+  if (!editTagForm.value.name.trim()) {
+    ElMessage.warning('标签名称不能为空')
+    return
+  }
+  try {
+    const res = await updateTag(tag.id, editTagForm.value)
+    if (res.code === 200) {
+      ElMessage.success('更新成功')
+      await loadAllTags()
+      // 同步已关联的标签数据
+      for (const code in stockTags.value) {
+        stockTags.value[code] = stockTags.value[code].map(t =>
+          t.id === tag.id ? { ...t, ...editTagForm.value } : t
+        )
+      }
+      editingTagId.value = null
+    } else {
+      ElMessage.error(res.message || '更新失败')
+    }
+  } catch (e) {
+    ElMessage.error('更新失败')
+  }
+}
+
+// 删除标签
+const handleDeleteTag = async (tag) => {
+  try {
+    await ElMessageBox.confirm(`确定删除标签「${tag.name}」吗？删除后与股票的关联也会移除。`, '提示', { type: 'warning' })
+    const res = await deleteTag(tag.id)
+    if (res.code === 200) {
+      ElMessage.success('删除成功')
+      await loadAllTags()
+      // 从所有股票的标签缓存中移除
+      for (const code in stockTags.value) {
+        stockTags.value[code] = stockTags.value[code].filter(t => t.id !== tag.id)
+      }
+    } else {
+      ElMessage.error(res.message || '删除失败')
+    }
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error('删除失败')
   }
 }
 
@@ -816,6 +1087,128 @@ const getTagTextColor = (color) => {
   return brightness > 128 ? '#000' : '#fff'
 }
 
+// 初始化富文本编辑器
+const initRichEditors = async () => {
+  // 动态导入 Quill
+  if (!Quill) {
+    const quillModule = await import('quill')
+    Quill = quillModule.default
+  }
+  
+  // 等待 DOM 元素出现，最多等待 5 秒
+  let retries = 10
+  while (retries > 0) {
+    if (marketAnalysisEditor.value && nextActionEditor.value) {
+      break
+    }
+    await new Promise(resolve => setTimeout(resolve, 500))
+    retries--
+  }
+  
+  // 如果 DOM 元素还不存在，强制再等一下
+  if (!marketAnalysisEditor.value || !nextActionEditor.value) {
+    await new Promise(resolve => setTimeout(resolve, 1000))
+  }
+  
+  // 创建大盘分析编辑器
+  if (marketAnalysisEditor.value && !marketAnalysisQuill) {
+    marketAnalysisQuill = new Quill(marketAnalysisEditor.value, {
+      theme: 'snow',
+      placeholder: '输入大盘分析内容...',
+      modules: {
+        toolbar: [
+          ['bold', 'italic', 'underline', 'strike'],
+          [{ 'list': 'ordered' }, { 'list': 'bullet' }],
+          [{ 'header': [1, 2, 3, false] }],
+          ['clean']
+        ]
+      }
+    })
+  }
+  
+  // 创建明日操作编辑器
+  if (nextActionEditor.value && !nextActionQuill) {
+    nextActionQuill = new Quill(nextActionEditor.value, {
+      theme: 'snow',
+      placeholder: '输入明日操作计划...',
+      modules: {
+        toolbar: [
+          ['bold', 'italic', 'underline', 'strike'],
+          [{ 'list': 'ordered' }, { 'list': 'bullet' }],
+          [{ 'header': [1, 2, 3, false] }],
+          ['clean']
+        ]
+      }
+    })
+  }
+  
+  return {
+    marketAnalysisQuill,
+    nextActionQuill
+  }
+}
+
+// 加载每日笔记
+const loadDailyNote = async (tradeDate) => {
+  // 如果 Quill 还没初始化，等待一下
+  if (!marketAnalysisQuill || !nextActionQuill) {
+    await new Promise(resolve => setTimeout(resolve, 1000))
+  }
+  
+  // 再次检查
+  if (!marketAnalysisQuill || !nextActionQuill) {
+    await initRichEditors()
+  }
+  
+  try {
+    const res = await getDailyNote(tradeDate)
+    
+    if (res.code === 200 && res.data) {
+      const note = res.data
+      
+      if (marketAnalysisQuill && note.market_analysis !== undefined) {
+        marketAnalysisQuill.root.innerHTML = note.market_analysis || ''
+      }
+      if (nextActionQuill && note.next_action !== undefined) {
+        nextActionQuill.root.innerHTML = note.next_action || ''
+      }
+    }
+  } catch (error) {
+    console.error('加载每日笔记失败:', error)
+  }
+}
+
+// 保存每日笔记
+const saveNote = async () => {
+  if (!currentTradeDate.value) {
+    ElMessage.warning('无法获取交易日期')
+    return
+  }
+  
+  noteSaving.value = true
+  try {
+    const marketAnalysis = marketAnalysisQuill ? marketAnalysisQuill.root.innerHTML : ''
+    const nextAction = nextActionQuill ? nextActionQuill.root.innerHTML : ''
+    
+    const res = await saveDailyNote({
+      tradeDate: currentTradeDate.value,
+      marketAnalysis,
+      nextAction
+    })
+    
+    if (res.code === 200) {
+      ElMessage.success('笔记保存成功')
+    } else {
+      ElMessage.error(res.message || '保存失败')
+    }
+  } catch (error) {
+    console.error('保存笔记失败:', error)
+    ElMessage.error('保存失败')
+  } finally {
+    noteSaving.value = false
+  }
+}
+
 // 获取图表数据
 const fetchChartData = async () => {
   loading.value = true
@@ -827,9 +1220,32 @@ const fetchChartData = async () => {
     
     if (result.code === 200) {
       chartData.value = result.data
+      
+      // 从summary中获取交易日期
+      const tradeDate = chartData.value?.summary?.tradeDate
+      if (tradeDate) {
+        currentTradeDate.value = tradeDate
+        // 加载周期信息
+        await loadCycleInfo(tradeDate)
+      }
+      
       // 数据加载后初始化图表
       await nextTick()
       initCharts()
+      
+      // 数据加载完成，设置 loading 为 false
+      loading.value = false
+      
+      // 强制等待 DOM 渲染
+      await new Promise(resolve => setTimeout(resolve, 500))
+      
+      // 初始化富文本编辑器
+      await initRichEditors()
+      
+      // 加载笔记
+      if (currentTradeDate.value) {
+        await loadDailyNote(currentTradeDate.value)
+      }
       
       // 加载股票标签
       const stockCodes = (chartData.value?.top10FactorStocks || []).map(s => s.code)
@@ -838,12 +1254,14 @@ const fetchChartData = async () => {
       }
     } else {
       error.value = result.message || '获取数据失败'
+      loading.value = false
     }
   } catch (e) {
     error.value = '网络错误，请检查后端服务'
     console.error('获取图表数据失败:', e)
-  } finally {
     loading.value = false
+  } finally {
+    // loading 状态在数据加载成功/失败后由上面的代码处理
   }
 }
 
@@ -1120,9 +1538,34 @@ watch(() => chartData.value, () => {
   font-weight: 500;
 }
 
+/* 大盘指数 + 主要指数行情 等高对齐 */
+.market-row {
+  margin-top: 20px;
+  display: flex;
+  align-items: stretch;
+}
+
+.market-row > .el-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.market-row > .el-col > .el-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.market-row > .el-col > .el-card :deep(.el-card__body) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
 /* 大盘指数卡片样式 */
 .market-card {
-  margin-top: 20px;
+  margin-top: 0;
 }
 
 .market-card .card-header {
@@ -1170,19 +1613,43 @@ watch(() => chartData.value, () => {
 
 .market-score {
   text-align: center;
-  padding: 10px 0;
+  padding: 14px 0 8px;
 }
 
 .market-score .score-value {
   font-size: 36px;
   font-weight: bold;
-  color: #409eff;
 }
 
 .market-score .score-label {
   font-size: 12px;
   color: #909399;
   margin-top: 4px;
+}
+
+.key-factor-col {
+  margin-bottom: 8px;
+}
+
+.key-factor-item {
+  background: #f5f7fa;
+  border-radius: 6px;
+  padding: 8px 6px;
+  text-align: center;
+}
+
+.key-factor-value {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.key-factor-name {
+  font-size: 11px;
+  color: #909399;
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .market-factors {
@@ -1454,6 +1921,72 @@ watch(() => chartData.value, () => {
   margin-bottom: 20px;
 }
 
+.tag-item-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  position: relative;
+}
+
+.tag-item-wrap .tag-actions {
+  display: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.tag-item-wrap:hover .tag-actions {
+  display: inline-flex;
+}
+
+.tag-action-btn {
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px;
+  border-radius: 3px;
+  transition: background 0.2s;
+}
+
+.edit-btn {
+  color: #409eff;
+}
+
+.edit-btn:hover {
+  background: #ecf5ff;
+}
+
+.delete-btn {
+  color: #f56c6c;
+}
+
+.delete-btn:hover {
+  background: #fef0f0;
+}
+
+.confirm-btn {
+  color: #67c23a;
+}
+
+.confirm-btn:hover {
+  background: #f0f9eb;
+}
+
+.cancel-btn {
+  color: #909399;
+}
+
+.cancel-btn:hover {
+  background: #f4f4f5;
+}
+
+.tag-edit-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #f5f7fa;
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+
 .selectable-tag {
   cursor: pointer;
   padding: 8px 15px;
@@ -1470,6 +2003,19 @@ watch(() => chartData.value, () => {
   font-size: 12px;
 }
 
+.stock-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tag-hint {
+  font-size: 11px;
+  color: #909399;
+  font-weight: normal;
+  margin-left: 6px;
+}
+
 .create-tag {
   margin-top: 10px;
 }
@@ -1479,5 +2025,75 @@ watch(() => chartData.value, () => {
   font-weight: bold;
   margin-bottom: 10px;
   color: #303133;
+}
+
+/* 每日笔记样式 */
+.note-card {
+  margin-bottom: 20px;
+}
+
+/* 周期信息样式 */
+.cycle-info-card {
+  margin-bottom: 20px;
+}
+
+.cycle-info {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cycle-info .cycle-title {
+  font-size: 18px;
+  font-weight: bold;
+  color: #303133;
+}
+
+.cycle-info .cycle-period {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cycle-info .cycle-date {
+  color: #909399;
+  font-size: 14px;
+}
+
+.cycle-info .cycle-features {
+  color: #606266;
+  font-size: 14px;
+  margin-top: 5px;
+}
+
+.note-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.note-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 10px;
+}
+
+.rich-editor {
+  min-height: 200px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+}
+
+.rich-editor :deep(.ql-container) {
+  min-height: 180px;
+  font-size: 14px;
+}
+
+.rich-editor :deep(.ql-toolbar) {
+  border-radius: 4px 4px 0 0;
+}
+
+.rich-editor :deep(.ql-container) {
+  border-radius: 0 0 4px 4px;
 }
 </style>

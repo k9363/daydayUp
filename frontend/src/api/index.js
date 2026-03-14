@@ -35,6 +35,15 @@ export function getReviewTaskResults(id) {
 }
 
 // 创建 Baostock 复盘任务
+export function createBaostockBatchReviewTask(data) {
+  return request.post('/review/task/baostock/batch', {
+    start_date: data.startDate,
+    end_date: data.endDate,
+    stock_filter: data.stockFilter || null,
+    overwrite: data.overwrite || false
+  })
+}
+
 export function createBaostockReviewTask(data) {
   const taskData = {
     task_name: data.taskName,
@@ -402,4 +411,98 @@ export function calculateExpression(data) {
 // 获取默认表达式
 export function getDefaultExpression(scope) {
   return request.get(`/expression/default/${scope}`)
+}
+
+// ==================== 每日笔记API ====================
+
+// 获取指定交易日的笔记
+export function getDailyNote(tradeDate) {
+  return request.get(`/review/note/${tradeDate}`)
+}
+
+// 保存每日笔记
+export function saveDailyNote(data) {
+  return request.post('/review/note', data)
+}
+
+// 获取最新笔记
+export function getLatestNote() {
+  return request.get('/review/note/latest')
+}
+
+// ==================== 周期管理API ====================
+
+// 获取所有周期列表
+export function getCycleList() {
+  return request.get('/cycle')
+}
+
+// 获取单个周期详情
+export function getCycleDetail(cycleId) {
+  return request.get(`/cycle/${cycleId}`)
+}
+
+// 创建周期
+export function createCycle(data) {
+  return request.post('/cycle', data)
+}
+
+// 更新周期
+export function updateCycle(cycleId, data) {
+  return request.put(`/cycle/${cycleId}`, data)
+}
+
+// 删除周期
+export function deleteCycle(cycleId) {
+  return request.delete(`/cycle/${cycleId}`)
+}
+
+// 获取周期下的小周期列表
+export function getSubPeriods(cycleId) {
+  return request.get(`/cycle/${cycleId}/sub-periods`)
+}
+
+// 创建小周期
+export function createSubPeriod(cycleId, data) {
+  return request.post(`/cycle/${cycleId}/sub-periods`, data)
+}
+
+// 更新小周期
+export function updateSubPeriod(subPeriodId, data) {
+  return request.put(`/cycle/sub-periods/${subPeriodId}`, data)
+}
+
+// 删除小周期
+export function deleteSubPeriod(subPeriodId) {
+  return request.delete(`/cycle/sub-periods/${subPeriodId}`)
+}
+
+// 获取所有交易日关联
+export function getTradeDays() {
+  return request.get('/cycle/trade-days')
+}
+
+// 绑定交易日到小周期
+export function bindTradeDay(data) {
+  return request.post('/cycle/trade-days/bind', data)
+}
+
+// 批量绑定交易日
+export function batchBindTradeDays(data) {
+  return request.post('/cycle/trade-days/batch', data)
+}
+
+// 解绑交易日
+export function unbindTradeDay(tradeDate) {
+  return request.delete(`/cycle/trade-days/${tradeDate}`)
+}
+
+// 根据日期获取周期信息
+export function getCycleByDate(tradeDate) {
+  return request.get(`/cycle/by-date/${tradeDate}`)
+}
+
+// 获取最近周期信息
+export function getLatestCycle() {
+  return request.get('/cycle/latest')
 }

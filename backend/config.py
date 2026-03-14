@@ -32,6 +32,19 @@ class Config:
             f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
             f"?charset=utf8mb4&auth_plugin_map=mysql_native_password"
         )
+
+        # 连接池配置 - 解决 MySQL 连接超时/失效问题
+        SQLALCHEMY_ENGINE_OPTIONS = {
+            'pool_size': 10,              # 连接池大小
+            'max_overflow': 5,            # 允许超出的连接数
+            'pool_recycle': 1800,         # 30分钟回收连接，避免 MySQL wait_timeout 超时
+            'pool_pre_ping': True,        # 每次使用连接前检查连接是否有效
+            'connect_args': {
+                'connect_timeout': 10,    # 连接超时时间
+                'read_timeout': 30,      # 读取超时
+                'write_timeout': 30,     # 写入超时
+            }
+        }
     
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     
