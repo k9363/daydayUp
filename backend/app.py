@@ -14,6 +14,7 @@ from routes.scheduler import scheduler_bp
 from routes.tag import tag_bp
 from routes.factor import factor_bp
 from routes.expression import expression_bp
+from routes.cycle import cycle_bp
 
 # 配置根日志（gunicorn 会覆盖，但为 fallback 保留）
 _root_handler = logging.StreamHandler(sys.stderr)
@@ -25,6 +26,11 @@ logging.basicConfig(
     level=logging.INFO,
     handlers=[_root_handler]
 )
+
+# 关闭 SQLAlchemy SQL 日志输出
+logging.getLogger('sqlalchemy.engine.Engine').setLevel(logging.WARNING)
+logging.getLogger('sqlalchemy.pool').setLevel(logging.WARNING)
+logging.getLogger('sqlalchemy.dialects').setLevel(logging.WARNING)
 
 # 设置所有 logger 级别
 for name in logging.Logger.manager.loggerDict:
@@ -76,6 +82,11 @@ def create_app(config_name=None):
     logging.root.addHandler(_root_handler)
     logging.root.setLevel(logging.INFO)
 
+    # 关闭 SQLAlchemy SQL 日志输出
+    logging.getLogger('sqlalchemy.engine.Engine').setLevel(logging.WARNING)
+    logging.getLogger('sqlalchemy.pool').setLevel(logging.WARNING)
+    logging.getLogger('sqlalchemy.dialects').setLevel(logging.WARNING)
+
     # 初始化SQLAlchemy
     db.init_app(app)
 
@@ -91,6 +102,7 @@ def create_app(config_name=None):
     app.register_blueprint(tag_bp, url_prefix='/api/tag')
     app.register_blueprint(factor_bp, url_prefix='/api/factor')
     app.register_blueprint(expression_bp, url_prefix='/api/expression')
+    app.register_blueprint(cycle_bp, url_prefix='/api/cycle')
 
     # 启动时登录 Baostock
     _init_baostock_login()

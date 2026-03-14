@@ -72,7 +72,10 @@ def create_factor():
         factor_name=data['factor_name'],
         factor_scope=data['factor_scope'],
         source=data.get('source'),
+        calculation_method=data.get('calculation_method'),
         field_name=data.get('field_name'),
+        days_range=data.get('days_range'),
+        days_offset=data.get('days_offset'),
         aggregation=data.get('aggregation'),
         index_code=data.get('index_code'),
         expression=data.get('expression'),
@@ -113,8 +116,12 @@ def update_factor(factor_id):
         factor.factor_scope = data['factor_scope']
     if 'source' in data:
         factor.source = data['source']
+    if 'calculation_method' in data:
+        factor.calculation_method = data['calculation_method']
     if 'field_name' in data:
         factor.field_name = data['field_name']
+    if 'days_range' in data:
+        factor.days_range = data['days_range']
     if 'aggregation' in data:
         factor.aggregation = data['aggregation']
     if 'index_code' in data:
@@ -125,6 +132,8 @@ def update_factor(factor_id):
         factor.description = data['description']
     if 'is_active' in data:
         factor.is_active = data['is_active']
+    if 'days_offset' in data:
+        factor.days_offset = data['days_offset']
     
     db.session.commit()
     
@@ -181,7 +190,9 @@ def batch_create_factors():
             factor_name=item['factor_name'],
             factor_scope=item.get('factor_scope', 'stock'),
             source=item.get('source'),
+            calculation_method=item.get('calculation_method'),
             field_name=item.get('field_name'),
+            days_range=item.get('days_range'),
             aggregation=item.get('aggregation'),
             index_code=item.get('index_code'),
             expression=item.get('expression'),

@@ -19,6 +19,8 @@ from models.delivery import StockDelivery
 from models.tag import StockTag, StockTagRelation
 from models.factor import FactorDefine
 from models.expression import ScoreExpression
+from models.dailynote import DailyNote
+from models.cycle import Cycle, CycleSubPeriod, CycleTradeDay
 
 
 def init_db(app):

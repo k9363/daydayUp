@@ -29,6 +29,14 @@ class FactorDefine(db.Model):
     # 字段名 (对应K线表的字段或因子代码)
     field_name = db.Column(db.String(50), comment='字段名')
     
+    # 天数区间配置，支持: "1_3", "1_5", "4_20", "11_30", "1_120" 等
+    # 用于动态计算平均成交额等时间窗口因子
+    days_range = db.Column(db.String(20), comment='天数区间，如 1_3 表示最近3天，4_20 表示第4-20天')
+    
+    # 日期偏移配置，支持: 1=昨日, 2=前日, 3=前3日...
+    # 用于获取历史某日的K线数据
+    days_offset = db.Column(db.Integer, default=0, comment='日期偏移，0=当日, 1=昨日, 2=前日, 以此类推')
+    
     # 聚合方式 (仅板块因子使用): SUM/AVG/MAX/MIN/COUNT
     aggregation = db.Column(db.String(20), comment='聚合方式')
     
@@ -62,6 +70,8 @@ class FactorDefine(db.Model):
             'calculation_method': self.calculation_method,
             'filter_condition': self.filter_condition,
             'field_name': self.field_name,
+            'days_range': self.days_range,
+            'days_offset': self.days_offset,
             'aggregation': self.aggregation,
             'index_code': self.index_code,
             'expression': self.expression,

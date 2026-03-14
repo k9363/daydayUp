@@ -67,11 +67,12 @@ class DataSyncService:
     
     def _callback_review_task(self, review_task_id):
         """回调复盘任务继续执行"""
+        from flask import current_app
         from extensions import db
         from models.reviewtask import ReviewTask
         from services.review_service import ReviewTaskService
-        
-        with db.app.app_context():
+
+        with current_app.app_context():
             review_task = ReviewTask.query.get(review_task_id)
             if not review_task:
                 logger.error(f"复盘任务不存在: {review_task_id}")
