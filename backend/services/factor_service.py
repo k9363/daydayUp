@@ -187,8 +187,8 @@ class FactorCalculator:
         df = pd.DataFrame(kline_data)
         
         # 初始化ma5, ma10列（后续会从历史数据计算）
-        df['ma5'] = 0
-        df['ma10'] = 0
+        df['ma5'] = 0.0
+        df['ma10'] = 0.0
         
         # 3. 获取历史K线数据（用于计算历史平均成交额）
         end_date = dt.datetime.strptime(trade_date, '%Y-%m-%d')
@@ -453,7 +453,7 @@ class FactorCalculator:
                     if len(hist) > days_offset:
                         df.loc[idx, factor_code] = hist[days_offset].get(source_field, 0)
                     else:
-                        df.loc[idx, factor_code] = 0
+                        df.loc[idx, factor_code] = 0.0
 
                 calculated_columns.add(factor_code)
                 logger.info(f"✅ 处理 kline_field 因子 {factor_code}, days_offset={days_offset}")
@@ -513,16 +513,16 @@ class FactorCalculator:
         
         # 确保历史均线因子存在于 df 中
         if 'ma5' not in df.columns:
-            df['ma5'] = 0
+            df['ma5'] = 0.0
         if 'ma10' not in df.columns:
-            df['ma10'] = 0
+            df['ma10'] = 0.0
         if 'ma20' not in df.columns:
-            df['ma20'] = 0
+            df['ma20'] = 0.0
         
         # 填充缺失值为0
         for col in all_factor_map.keys():
             if col not in df.columns:
-                df[col] = 0
+                df[col] = 0.0
             df[col] = df[col].fillna(0)
         
         logger.info(f"📊 原子因子计算完成，列: {list(df.columns)}")
@@ -548,7 +548,7 @@ class FactorCalculator:
                     logger.info(f"✅ 因子 {factor_code} 使用表达式计算成功")
                 except Exception as e:
                     logger.warning(f"⚠️ 因子 {factor_code} 表达式计算失败: {e}，设为0")
-                    df[factor_code] = 0
+                    df[factor_code] = 0.0
         
         logger.info(f"📊 表达式因子计算完成: {calculated_factors}")
         
@@ -631,9 +631,9 @@ class FactorCalculator:
         
         if not deviation_factors:
             logger.info("📊 未配置偏离值因子，跳过计算")
-            df['deviation_10d'] = 0
-            df['deviation_30d'] = 0
-            df['remaining_deviation'] = 0
+            df['deviation_10d'] = 0.0
+            df['deviation_30d'] = 0.0
+            df['remaining_deviation'] = 0.0
             return
         
         # 获取所有需要的指数代码
@@ -679,7 +679,7 @@ class FactorCalculator:
             
             if len(index_history) < required_days:
                 logger.warning(f"📊 指数 {index_code} 历史数据不足 {required_days} 天，仅有 {len(index_history)} 天")
-                df[factor_code] = 0
+                df[factor_code] = 0.0
                 continue
             
             # 获取期末和期初前收盘价
@@ -688,7 +688,7 @@ class FactorCalculator:
             index_pre_close = index_history[days_range]['close_price']
             
             if index_pre_close <= 0 or index_end_close <= 0:
-                df[factor_code] = 0
+                df[factor_code] = 0.0
                 continue
             
             # 计算指数区间涨跌幅
@@ -700,14 +700,14 @@ class FactorCalculator:
                 stock_hist = history_data.get(stock_code, [])
                 
                 if len(stock_hist) < required_days:
-                    df.loc[idx, factor_code] = 0
+                    df.loc[idx, factor_code] = 0.0
                     continue
                 
                 stock_end_close = stock_hist[0]['close_price']
                 stock_pre_close = stock_hist[days_range]['close_price']
                 
                 if stock_pre_close <= 0 or stock_end_close <= 0:
-                    df.loc[idx, factor_code] = 0
+                    df.loc[idx, factor_code] = 0.0
                     continue
                 
                 # 个股区间涨跌幅
@@ -736,7 +736,7 @@ class FactorCalculator:
                 # 取最小的剩余偏离值（最接近阈值）
                 df.loc[idx, 'remaining_deviation'] = round(min(remaining_10d, remaining_30d), 2)
         else:
-            df['remaining_deviation'] = 0
+            df['remaining_deviation'] = 0.0
     
     def calculate_sector_factors(self, stock_factors_df: pd.DataFrame, db_session) -> pd.DataFrame:
         """

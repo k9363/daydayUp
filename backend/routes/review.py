@@ -437,13 +437,44 @@ def create_baostock_batch_tasks():
         # 顺序执行所有新建任务（单个后台线程，避免并发 Baostock 连接冲突）
         def run_batch(task_ids, app_obj):
             from services.review_service import ReviewTaskService
+            from models.reviewtask import ReviewTask
+            import time
             with app_obj.app_context():
                 svc = ReviewTaskService()
                 for tid in task_ids:
                     try:
                         svc.execute_baostock_task(tid)
+                        
+                        # 如果任务进入 waiting_for_sync 状态，等待同步完成后再继续
+                        # 需要重新查询任务状态，而不是使用已缓存的对象
+                        task = ReviewTask.query.get(tid)
+                        wait_count = 0
+                        max_wait_count = 300  # 最多等待10分钟（300 * 2秒）
+                        while task and task.status == 'waiting_for_sync':
+                            wait_count += 1
+                            if wait_count % 15 == 0:  # 每30秒打印一次日志
+                                logger.info(f"等待数据同步完成: task_id={tid}, 已等待 {wait_count * 2} 秒")
+                            if wait_count >= max_wait_count:
+                                logger.error(f"等待数据同步超时: task_id={tid}, 跳过此任务")
+                                break
+                            time.sleep(2)  # 每2秒检查一次
+                            # 重新查询以获取最新状态
+                            db.session.expire(task)
+                            task = ReviewTask.query.get(tid)
+                            
+                        # 如果任务已完成或失败，记录日志
+                        if task:
+                            if task.status == 'completed':
+                                logger.info(f"复盘任务 {tid} 已完成")
+                            elif task.status == 'failed':
+                                logger.error(f"复盘任务 {tid} 失败: {task.error_message}")
+                            elif task.status == 'waiting_for_sync':
+                                logger.error(f"复盘任务 {tid} 等待同步超时，跳过")
+                                
                     except Exception as e:
                         logger.error(f"批量复盘任务 {tid} 执行失败: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
 
         if created_tasks:
             from threading import Thread
@@ -742,16 +773,47 @@ def task_chart_data(task_id):
 
 @review_bp.route('/dashboard', methods=['GET'])
 def get_dashboard_data():
-    """获取首页仪表盘数据 - 近10个交易日的板块前10、因子得分Top10和趋势图表"""
+    """获取首页仪表盘数据 - 支持选择交易日时间范围，默认近10个交易日"""
     try:
         import json
         from models.reviewtask import ReviewTask
         from models.reviewresult import ReviewResult
         
-        # 获取近10个已完成的任务（按交易日期倒序）
-        recent_tasks = ReviewTask.query.filter(
-            ReviewTask.status == 'completed'
-        ).order_by(ReviewTask.trade_date.desc()).limit(10).all()
+        # 获取查询参数
+        from flask import request
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        days = request.args.get('days', 10, type=int)
+        
+        # 构建查询条件
+        query = ReviewTask.query.filter(ReviewTask.status == 'completed')
+        
+        if start_date and end_date:
+            # 如果提供了日期范围，按范围查询
+            query = query.filter(
+                ReviewTask.trade_date >= start_date,
+                ReviewTask.trade_date <= end_date
+            ).order_by(ReviewTask.trade_date.desc())
+        elif start_date:
+            # 只提供开始日期，获取从该日期到当前的所有数据
+            query = query.filter(
+                ReviewTask.trade_date >= start_date
+            ).order_by(ReviewTask.trade_date.desc())
+        elif end_date:
+            # 只提供结束日期，获取从最早到该日期的数据
+            query = query.filter(
+                ReviewTask.trade_date <= end_date
+            ).order_by(ReviewTask.trade_date.desc())
+        else:
+            # 默认获取近10个交易日
+            query = query.order_by(ReviewTask.trade_date.desc())
+        
+        # 如果没有指定日期范围，则限制数量
+        if not start_date and not end_date:
+            recent_tasks = query.limit(days).all()
+        else:
+            # 如果指定了日期范围，获取所有符合条件的数据
+            recent_tasks = query.all()
         
         dashboard_data = []
         

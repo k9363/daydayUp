@@ -60,6 +60,11 @@
           </div>
           <el-table :data="currentCycle.sub_periods || []" stripe size="small">
             <el-table-column prop="name" label="名称" width="120" />
+            <el-table-column prop="features" label="特点" min-width="150" show-overflow-tooltip>
+              <template #default="{ row }">
+                {{ row.features || '-' }}
+              </template>
+            </el-table-column>
             <el-table-column prop="period_type" label="类型" width="100">
               <template #default="{ row }">
                 <el-tag :type="getPeriodTypeTag(row.period_type)">{{ getPeriodTypeName(row.period_type) }}</el-tag>
@@ -124,6 +129,9 @@
         <el-form-item label="名称">
           <el-input v-model="subPeriodForm.name" placeholder="默认为类型名称" />
         </el-form-item>
+        <el-form-item label="特点">
+          <el-input v-model="subPeriodForm.features" type="textarea" :rows="2" placeholder="描述这个小周期的特点" />
+        </el-form-item>
         <el-form-item label="开始日期" required>
           <el-date-picker v-model="subPeriodForm.start_date" type="date" placeholder="选择开始日期" value-format="YYYY-MM-DD" style="width: 100%" />
         </el-form-item>
@@ -167,6 +175,7 @@ const currentSubPeriod = ref(null)
 const subPeriodForm = ref({
   period_type: '',
   name: '',
+  features: '',
   start_date: '',
   end_date: ''
 })
@@ -271,6 +280,7 @@ const openCreateSubPeriodDialog = () => {
   subPeriodForm.value = {
     period_type: '',
     name: '',
+    features: '',
     start_date: '',
     end_date: ''
   }
@@ -283,6 +293,7 @@ const openEditSubPeriodDialog = (row) => {
   subPeriodForm.value = {
     period_type: row.period_type,
     name: row.name,
+    features: row.features || '',
     start_date: row.start_date,
     end_date: row.end_date || ''
   }

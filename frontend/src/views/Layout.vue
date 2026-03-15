@@ -161,26 +161,60 @@ const toggleCollapse = () => {
 .sidebar-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 20px 16px;
+  gap: 8px;
+  padding: 20px 12px;
   border-bottom: 1px solid #ebeef5;
   height: 64px;
   box-sizing: border-box;
 }
 
-.sidebar-title {
-  font-size: 20px;
+.sidebar-header .el-icon {
+  flex-shrink: 0;
+}
+
+.sidebar-header .sidebar-title {
+  flex: 1;
+  font-size: 18px;
   font-weight: 600;
   color: #303133;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+
+/* 收起时居中显示 */
+.layout-container.is-collapsed .sidebar-header {
+  justify-content: center;
+  padding: 20px 8px;
+}
+
+.layout-container.is-collapsed .sidebar-title {
+  display: none;
+}
+
+.layout-container.is-collapsed .sidebar-spacer {
+  display: none;
+}
+
+.sidebar-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #303133;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
 }
 
 .sidebar-spacer {
   flex: 1;
+  min-width: 0;
 }
 
 .collapse-btn {
   color: #606266;
+  flex-shrink: 0;
 }
 
 .sidebar-menu {

@@ -41,6 +41,7 @@ class CycleSubPeriod(db.Model):
     cycle_id = db.Column(db.BigInteger, db.ForeignKey('cycle.id', ondelete='CASCADE'), nullable=False, comment='周期ID')
     period_type = db.Column(db.String(20), nullable=False, comment='小周期类型: chaos-混沌, rise-主升, oscillation-震荡, decline-退潮')
     name = db.Column(db.String(50), nullable=False, comment='小周期名称')
+    features = db.Column(db.Text, comment='小周期特点')
     start_date = db.Column(db.String(20), nullable=False, comment='开始日期 YYYY-MM-DD')
     end_date = db.Column(db.String(20), comment='结束日期 YYYY-MM-DD')
     order_num = db.Column(db.Integer, default=0, comment='排序号')
@@ -66,6 +67,7 @@ class CycleSubPeriod(db.Model):
             'cycle_id': self.cycle_id,
             'period_type': self.period_type,
             'name': self.name,
+            'features': self.features,
             'start_date': self.start_date,
             'end_date': self.end_date,
             'order_num': self.order_num,

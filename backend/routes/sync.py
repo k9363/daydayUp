@@ -94,6 +94,8 @@ def create_sync_task():
 def get_sync_task(task_id):
     """获取同步任务详情"""
     try:
+        # 刷新会话，确保获取最新数据
+        db.session.expire_all()
         task = DataSyncTask.query.get(task_id)
         if not task:
             return jsonify({'code': 404, 'message': '任务不存在'}), 404
@@ -134,20 +136,41 @@ def start_sync_task(task_id):
         from flask import current_app
         service = get_data_sync_service()
         app = current_app._get_current_object()
+        
+        # 将任务参数提取到外部变量，避免在新线程中引用外部scope的Flask对象
+        task_id = task.id
+        task_start_date = task.start_date
+        task_end_date = task.end_date
+        task_frequency = task.frequency
+        task_stock_type = task.stock_type
 
         def run_task():
             try:
                 with app.app_context():
-                    service.sync_kline_data(
-                        db_session=db.session,
-                        task_id=task.id,
-                        start_date=task.start_date,
-                        end_date=task.end_date,
-                        frequency=task.frequency,
-                        stock_type=task.stock_type
-                    )
+                    # 在新线程中创建独立的数据库会话，避免与主线程的session冲突
+                    from sqlalchemy.orm import sessionmaker
+                    from extensions import db
+                    
+                    # 使用 db 的 engine 创建新 session
+                    engine = db.engine
+                    Session = sessionmaker(bind=engine)
+                    local_session = Session()
+                    
+                    try:
+                        service.sync_kline_data(
+                            db_session=local_session,
+                            task_id=task_id,
+                            start_date=task_start_date,
+                            end_date=task_end_date,
+                            frequency=task_frequency,
+                            stock_type=task_stock_type
+                        )
+                    finally:
+                        local_session.close()
             except Exception as e:
+                import traceback
                 logger.error(f"同步任务执行失败: {e}")
+                logger.error(traceback.format_exc())
 
         thread = Thread(target=run_task, daemon=True)
         thread.start()
@@ -219,6 +242,9 @@ def get_sync_tasks():
     try:
         status = request.args.get('status')
         limit = request.args.get('limit', 20, type=int)
+
+        # 刷新会话，确保获取最新数据
+        db.session.expire_all()
 
         query = DataSyncTask.query
         if status:

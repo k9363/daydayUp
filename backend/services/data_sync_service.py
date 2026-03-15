@@ -55,15 +55,23 @@ class DataSyncService:
         try:
             import json
             callback_params = json.loads(task.callback_params) if task.callback_params else {}
+            logger.info(f"回调参数: {callback_params}")
         except:
             callback_params = {}
         
-        if task.callback_type == 'review_task':
-            review_task_id = callback_params.get('review_task_id')
-            if review_task_id:
-                self._callback_review_task(review_task_id)
-        else:
-            logger.warning(f"未知的回调类型: {task.callback_type}")
+        try:
+            if task.callback_type == 'review_task':
+                review_task_id = callback_params.get('review_task_id')
+                if review_task_id:
+                    self._callback_review_task(review_task_id)
+                else:
+                    logger.warning(f"回调参数中缺少 review_task_id")
+            else:
+                logger.warning(f"未知的回调类型: {task.callback_type}")
+        except Exception as e:
+            logger.error(f"执行回调失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     def _callback_review_task(self, review_task_id):
         """回调复盘任务继续执行"""
@@ -72,11 +80,15 @@ class DataSyncService:
         from models.reviewtask import ReviewTask
         from services.review_service import ReviewTaskService
 
+        logger.info(f"开始回调复盘任务: {review_task_id}")
+        
         with current_app.app_context():
             review_task = ReviewTask.query.get(review_task_id)
             if not review_task:
                 logger.error(f"复盘任务不存在: {review_task_id}")
                 return
+            
+            logger.info(f"复盘任务当前状态: {review_task.status}")
             
             if review_task.status != 'waiting_for_sync':
                 logger.warning(f"复盘任务状态不是 waiting_for_sync: {review_task.status}")
@@ -87,6 +99,7 @@ class DataSyncService:
             review_task.waiting_for_sync = False
             review_task.sync_task_id = None
             db.session.commit()
+            logger.info(f"复盘任务状态已更新为 running")
             
             # 直接在当前线程执行复盘任务（不再启动新线程，避免嵌套线程问题）
             service = ReviewTaskService()
@@ -422,7 +435,7 @@ class DataSyncService:
         
         task = None
         if task_id > 0:
-            task = DataSyncTask.query.get(task_id)
+            task = db_session.query(DataSyncTask).get(task_id)
             if not task:
                 raise Exception(f"任务不存在: {task_id}")
             
@@ -448,9 +461,11 @@ class DataSyncService:
             logger.info(f"任务继续执行，已处理 {len(processed_codes_set)} 只股票")
         
         if task:
+            logger.info(f"更新同步任务状态: {task.id} from {task.status} to running")
             task.status = 'running'
             task.start_time = datetime.now()
             db_session.commit()
+            logger.info(f"同步任务状态已更新为 running")
 
         try:
             # 确保已登录（自动重连如果会话失效）
@@ -672,6 +687,7 @@ class DataSyncService:
                 # 元数据补充失败不应影响主流程
 
             if task:
+                logger.info(f"更新同步任务状态: {task.id} from {task.status} to completed")
                 task.status = 'completed'
                 task.end_time = datetime.now()
                 task.processed_stocks = total_processed
@@ -679,8 +695,14 @@ class DataSyncService:
                 task.processed_codes = json.dumps(list(processed_codes_set))
                 db_session.commit()
                 
+                logger.info(f"同步任务 {task.id} 状态已更新为 completed")
+                
+                logger.info(f"数据同步任务 {task.id} 完成，准备执行回调...")
+                
                 # 执行回调
                 self._execute_callback(task)
+                
+                logger.info(f"数据同步任务 {task.id} 回调执行完成")
                 
                 return task.total_stocks, total_processed, task.total_records, total_saved
             else:
@@ -690,6 +712,7 @@ class DataSyncService:
 
         except Exception as e:
             if task:
+                logger.info(f"更新同步任务状态: {task.id} from {task.status} to failed")
                 task.status = 'failed'
                 task.end_time = datetime.now()
                 task.error_message = str(e)
@@ -700,11 +723,13 @@ class DataSyncService:
 
     def get_sync_task_status(self, task_id):
         """获取同步任务状态"""
-        return DataSyncTask.query.get(task_id)
+        from models.kline import DataSyncTask
+        return db.session.query(DataSyncTask).get(task_id)
 
     def get_sync_task_list(self, status=None, limit=20):
         """获取同步任务列表"""
-        query = DataSyncTask.query
+        from models.kline import DataSyncTask
+        query = db.session.query(DataSyncTask)
         if status:
             query = query.filter(DataSyncTask.status == status)
         return query.order_by(DataSyncTask.create_time.desc()).limit(limit).all()

@@ -1234,34 +1234,53 @@ class ReviewTaskService:
             # 启动同步任务（在后台线程中执行）
             from threading import Thread
             from flask import current_app
+            from sqlalchemy.orm import sessionmaker
             
             # 获取 app 实例
             app = current_app._get_current_object()
             
-            def run_sync_task():
-                # 关键：创建新的 app context
-                with app.app_context():
-                    from extensions import db
-                    from services.data_sync_service import DataSyncService
-                    sync_service = DataSyncService()
-                    try:
-                        sync_service.sync_kline_data(
-                            db_session=db.session,
-                            task_id=sync_task_id,
-                            start_date=trade_date,
-                            end_date=trade_date,
-                            frequency='daily',
-                            stock_codes=missing_codes,
-                            batch_size=100,
-                            request_interval=0
-                        )
-                    except Exception as e:
-                        logger.error(f"同步任务执行失败: {e}")
-                        import traceback
-                        logger.error(traceback.format_exc())
+            # 将参数提取到外部变量，避免在新线程中引用 Flask 对象
+            task_id = sync_task_id
+            start_date = trade_date
+            end_date = trade_date
+            missing_codes_list = missing_codes
             
-            thread = Thread(target=run_sync_task, daemon=True)
+            def run_sync_task():
+                try:
+                    with app.app_context():
+                        # 在新线程中创建独立的数据库会话，避免与主线程的session冲突
+                        engine = db.engine
+                        Session = sessionmaker(bind=engine)
+                        local_session = Session()
+                        
+                        from services.data_sync_service import DataSyncService
+                        sync_service = DataSyncService()
+                        try:
+                            sync_service.sync_kline_data(
+                                db_session=local_session,
+                                task_id=task_id,
+                                start_date=start_date,
+                                end_date=end_date,
+                                frequency='daily',
+                                stock_codes=missing_codes_list,
+                                batch_size=100,
+                                request_interval=0
+                            )
+                        except Exception as e:
+                            logger.error(f"同步任务执行失败: {e}")
+                            import traceback
+                            logger.error(traceback.format_exc())
+                        finally:
+                            local_session.close()
+                except Exception as e:
+                    logger.error(f"同步任务线程执行失败: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+            
+            thread = Thread(target=run_sync_task)
             thread.start()
+            
+            logger.info(f"已启动同步任务线程 (task_id={task_id}), 主线程返回，任务将通过回调继续...")
             
             # 返回空 DataFrame，表示需要等待
             return pd.DataFrame()

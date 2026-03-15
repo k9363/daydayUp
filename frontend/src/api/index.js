@@ -74,8 +74,8 @@ export function deleteReviewTask(id) {
 }
 
 // 获取首页仪表盘数据
-export function getDashboardData() {
-  return request.get('/review/dashboard')
+export function getDashboardData(params) {
+  return request.get('/review/dashboard', { params })
 }
 
 // ==================== 股票相关API ====================

@@ -11,8 +11,15 @@
             </el-tag>
             <span class="cycle-date">{{ latestCycle.trade_date }}</span>
           </div>
+          <div class="cycle-time-range">
+            <span>大周期: {{ latestCycle.cycle?.start_date }} ~ {{ latestCycle.cycle?.end_date || '进行中' }}</span>
+            <span class="sub-range">小周期: {{ latestCycle.sub_period?.start_date }} ~ {{ latestCycle.sub_period?.end_date || '进行中' }}</span>
+          </div>
           <div class="cycle-features" v-if="latestCycle.cycle?.features">
             {{ latestCycle.cycle?.features }}
+          </div>
+          <div class="sub-period-features" v-if="latestCycle.sub_period?.features">
+            {{ latestCycle.sub_period?.features }}
           </div>
         </div>
       </el-card>
@@ -23,10 +30,25 @@
       <el-card>
         <template #header>
           <div class="card-header">
-            <span>近期复盘趋势（近10个交易日）</span>
-            <el-tag v-if="latestMarketScore !== null" :type="latestMarketScore > 0 ? 'danger' : 'success'" size="large">
-              {{ latestMarketScore > 0 ? '上涨' : '下跌' }}
-            </el-tag>
+            <div class="header-left">
+              <span>近期复盘趋势</span>
+              <el-date-picker
+                v-model="dateRange"
+                type="daterange"
+                range-separator="至"
+                start-placeholder="开始日期"
+                end-placeholder="结束日期"
+                value-format="YYYY-MM-DD"
+                :clearable="true"
+                :shortcuts="dateShortcuts"
+                @change="handleDateRangeChange"
+                style="margin-left: 15px; width: 260px"
+                size="small"
+              />
+              <el-tag v-if="latestMarketScore !== null" :type="latestMarketScore > 0 ? 'danger' : 'success'" size="large" style="margin-left: 10px">
+                {{ latestMarketScore > 0 ? '上涨' : '下跌' }}
+              </el-tag>
+            </div>
           </div>
         </template>
         
@@ -57,13 +79,94 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, nextTick, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { getDashboardData, getLatestCycle } from '@/api'
 import * as echarts from 'echarts'
+
+const router = useRouter()
 
 const loading = ref(false)
 const dashboardData = ref([])
 const latestCycle = ref(null)
+
+// 日期快捷选项 - 约 n 个交易日 ≈ n*2 个日历天（含周末）
+const getDateRangeByTradingDays = (n) => {
+  const end = new Date()
+  const start = new Date()
+  start.setDate(start.getDate() - Math.max(n * 2, 7))
+  const pad = (num) => String(num).padStart(2, '0')
+  const format = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  return [format(start), format(end)]
+}
+
+const dateRange = ref(getDateRangeByTradingDays(10))
+
+const dateShortcuts = [
+  { text: '最近5个交易日', value: () => getDateRangeByTradingDays(5) },
+  { text: '最近10个交易日', value: () => getDateRangeByTradingDays(10) },
+  { text: '最近20个交易日', value: () => getDateRangeByTradingDays(20) },
+  { text: '最近30个交易日', value: () => getDateRangeByTradingDays(30) }
+]
+
+// 数据加载函数
+const loadData = async (dateRangeParam = null) => {
+  loading.value = true
+  try {
+    // 获取周期信息
+    try {
+      const cycleRes = await getLatestCycle()
+      if (cycleRes.code === 200 && cycleRes.data) {
+        latestCycle.value = cycleRes.data
+      }
+    } catch (e) {
+      console.log('暂无周期数据')
+    }
+
+    // 获取仪表盘数据
+    try {
+      const params = {}
+      // 优先使用传入的参数，否则使用响应式数据
+      const dateRangeVal = dateRangeParam !== null ? dateRangeParam : dateRange.value
+      console.log('当前 dateRange:', dateRangeVal)
+      if (dateRangeVal && dateRangeVal.length === 2) {
+        params.start_date = dateRangeVal[0]
+        params.end_date = dateRangeVal[1]
+        console.log('请求参数:', params)
+      }
+      const dashboardRes = await getDashboardData(params)
+      console.log('仪表盘数据:', dashboardRes)
+      dashboardData.value = dashboardRes.data || []
+      // 图表更新由 watch 监听处理
+    } catch (e) {
+      console.error('获取仪表盘数据失败:', e)
+      dashboardData.value = []
+    }
+  } catch (error) {
+    console.error('加载数据失败:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+// 处理日期范围变化
+const handleDateRangeChange = (val) => {
+  console.log('日期范围变化:', val)
+  // 无论选择选择日期，都重新加载数据
+  loadData(val)
+}
+
+// 监听数据变化，自动更新图表
+watch(dashboardData, (newVal) => {
+  console.log('watch triggered, dashboardData:', newVal)
+  if (newVal && newVal.length > 0) {
+    nextTick(() => {
+      console.log('nextTick, updating charts...')
+      updateCharts()
+    })
+  }
+}, { deep: true })
+
 const latestMarketScore = computed(() => {
   // 获取最近一次复盘的大盘指数（数据已按日期倒序，第一个就是最近的）
   if (dashboardData.value.length > 0) {
@@ -154,9 +257,19 @@ const sectorChartData = computed(() => {
 
 const initMarketChart = () => {
   if (!marketChartRef.value) return
+  // 先销毁旧图表实例，避免内存泄漏和数据残留
+  if (marketChart) {
+    marketChart.dispose()
+  }
   marketChart = echarts.init(marketChartRef.value)
   const data = marketChartData.value
-  
+
+  // 构建 taskId 映射
+  const taskIdMap = {}
+  dashboardData.value.slice().reverse().forEach((item, idx) => {
+    taskIdMap[item.tradeDate] = item.taskId
+  })
+
   const option = {
     tooltip: {
       trigger: 'axis',
@@ -201,12 +314,31 @@ const initMarketChart = () => {
     }]
   }
   marketChart.setOption(option)
+
+  // 点击跳转
+  marketChart.off('click')
+  marketChart.on('click', (params) => {
+    const taskId = taskIdMap[params.name]
+    if (taskId) {
+      router.push(`/review/result/${taskId}`)
+    }
+  })
 }
 
 const initStockChart = () => {
   if (!stockChartRef.value) return
+  // 先销毁旧图表实例
+  if (stockChart) {
+    stockChart.dispose()
+  }
   stockChart = echarts.init(stockChartRef.value)
   const data = stockChartData.value
+
+  // 构建 taskId 映射
+  const taskIdMap = {}
+  dashboardData.value.slice().reverse().forEach((item, idx) => {
+    taskIdMap[item.tradeDate] = item.taskId
+  })
   
   // 颜色数组
   const colors = ['#67C23A', '#409EFF', '#E6A23C', '#F56C6C', '#909399', '#19BE6B', '#FFB800', '#46ADFD', '#FF6B6B', '#9B59B6']
@@ -270,12 +402,31 @@ const initStockChart = () => {
     series: series
   }
   stockChart.setOption(option)
+
+  // 点击跳转
+  stockChart.off('click')
+  stockChart.on('click', (params) => {
+    const taskId = taskIdMap[params.name]
+    if (taskId) {
+      router.push(`/review/result/${taskId}`)
+    }
+  })
 }
 
 const initSectorChart = () => {
   if (!sectorChartRef.value) return
+  // 先销毁旧图表实例
+  if (sectorChart) {
+    sectorChart.dispose()
+  }
   sectorChart = echarts.init(sectorChartRef.value)
   const data = sectorChartData.value
+
+  // 构建 taskId 映射
+  const taskIdMap = {}
+  dashboardData.value.slice().reverse().forEach((item, idx) => {
+    taskIdMap[item.tradeDate] = item.taskId
+  })
   
   // 颜色数组 - 使用与股票不同的颜色
   const colors = ['#E6A23C', '#F56C6C', '#909399', '#19BE6B', '#FFB800', '#46ADFD', '#FF6B6B', '#9B59B6', '#67C23A', '#409EFF']
@@ -339,45 +490,22 @@ const initSectorChart = () => {
     series: series
   }
   sectorChart.setOption(option)
+
+  // 点击跳转
+  sectorChart.off('click')
+  sectorChart.on('click', (params) => {
+    const taskId = taskIdMap[params.name]
+    if (taskId) {
+      router.push(`/review/result/${taskId}`)
+    }
+  })
 }
 
 const updateCharts = () => {
-  setTimeout(() => {
-    initMarketChart()
-    initSectorChart()
-    initStockChart()
-  }, 100)
-}
-
-const loadData = async () => {
-  loading.value = true
-  try {
-    // 获取周期信息
-    try {
-      const cycleRes = await getLatestCycle()
-      if (cycleRes.code === 200 && cycleRes.data) {
-        latestCycle.value = cycleRes.data
-      }
-    } catch (e) {
-      console.log('暂无周期数据')
-    }
-
-    // 获取仪表盘数据
-    try {
-      const dashboardRes = await getDashboardData()
-      console.log('仪表盘数据:', dashboardRes)
-      dashboardData.value = dashboardRes.data || []
-      // 更新图表
-      updateCharts()
-    } catch (e) {
-      console.error('获取仪表盘数据失败:', e)
-      dashboardData.value = []
-    }
-  } catch (error) {
-    console.error('加载数据失败:', error)
-  } finally {
-    loading.value = false
-  }
+  // 立即更新图表，不延迟
+  initMarketChart()
+  initSectorChart()
+  initStockChart()
 }
 
 onMounted(() => {
@@ -492,8 +620,24 @@ onMounted(() => {
   font-size: 14px;
 }
 
+.cycle-time-range {
+  color: #606266;
+  font-size: 14px;
+  margin-top: 8px;
+}
+
+.cycle-time-range .sub-range {
+  margin-left: 20px;
+}
+
 .cycle-features {
   color: #606266;
+  font-size: 14px;
+  margin-top: 8px;
+}
+
+.sub-period-features {
+  color: #409EFF;
   font-size: 14px;
   margin-top: 5px;
 }
@@ -528,5 +672,12 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
 }
 </style>

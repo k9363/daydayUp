@@ -102,6 +102,7 @@ def create_sub_period(cycle_id):
         cycle_id=cycle_id,
         period_type=data['period_type'],
         name=data.get('name', data['period_type']),
+        features=data.get('features'),
         start_date=data['start_date'],
         end_date=data.get('end_date'),
         order_num=data.get('order_num', max_order + 1)
@@ -123,6 +124,8 @@ def update_sub_period(sub_period_id):
         sub_period.period_type = data['period_type']
     if 'name' in data:
         sub_period.name = data['name']
+    if 'features' in data:
+        sub_period.features = data['features']
     if 'start_date' in data:
         sub_period.start_date = data['start_date']
     if 'end_date' in data:
