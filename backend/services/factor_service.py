@@ -119,6 +119,10 @@ class FactorCalculator:
         # 处理 OR 关键字
         expression = re.sub(r'\bOR\b', ' or ', expression, flags=re.IGNORECASE)
         
+        # 处理比较运算符：= 转换为 ==（但需要避免转换已经是 == 的情况）
+        # 使用负向后顾，确保前面不是 =
+        expression = re.sub(r'(?<![=!<>])=(?!=)', '==', expression)
+        
         return expression
     
     def _get_factor_definitions(self, db_session) -> Dict[str, FactorDefine]:
@@ -131,7 +135,7 @@ class FactorCalculator:
         all_factor_map = {f.factor_code: f for f in stock_factors}
         logger.info(f"📊 从数据库加载 {len(all_factor_map)} 个因子定义")
         for f in stock_factors:
-            logger.info(f"  - {f.factor_code}: {f.factor_name}, method={f.calculation_method}, expression={f.expression}")
+            logger.debug(f"  - {f.factor_code}: {f.factor_name}, method={f.calculation_method}, expression={f.expression}")
         
         return all_factor_map
     
@@ -163,23 +167,23 @@ class FactorCalculator:
         ).all()
         stock_name_map = {s.stock_code: s.stock_name for s in stock_basics}
         
-        # 2. 获取当日K线数据（包括预计算的ma5, ma10, ma20）
+        # 2. 批量获取当日K线数据（一次 IN 查询，避免 N+1 问题）
+        klines_today = db_session.query(StockDailyKLine).filter(
+            StockDailyKLine.stock_code.in_(stock_codes),
+            StockDailyKLine.trade_date == trade_date
+        ).all()
+
         kline_data = []
-        for code in stock_codes:
-            kline = db_session.query(StockDailyKLine).filter(
-                StockDailyKLine.stock_code == code,
-                StockDailyKLine.trade_date == trade_date
-            ).first()
-            
-            if kline:
-                kline_data.append({
-                    'stock_code': code,
-                    'stock_name': stock_name_map.get(code, ''),
-                    'close_price': float(kline.close_price) if kline.close_price else 0,
-                    'volume': float(kline.volume) if kline.volume else 0,
-                    'turnover': float(kline.turnover) if kline.turnover else 0,
-                    'pct_change': float(kline.change_percent) if kline.change_percent else 0,
-                })
+        for kline in klines_today:
+            code = kline.stock_code
+            kline_data.append({
+                'stock_code': code,
+                'stock_name': stock_name_map.get(code, ''),
+                'close_price': float(kline.close_price) if kline.close_price else 0,
+                'volume': float(kline.volume) if kline.volume else 0,
+                'turnover': float(kline.turnover) if kline.turnover else 0,
+                'pct_change': float(kline.change_percent) if kline.change_percent else 0,
+            })
         
         if not kline_data:
             return pd.DataFrame()
@@ -216,6 +220,7 @@ class FactorCalculator:
                 'turnover': float(kline.turnover) if kline.turnover else 0,
                 'volume': float(kline.volume) if kline.volume else 0,
                 'close_price': float(kline.close_price) if kline.close_price else 0,
+                'high_price': float(kline.high_price) if kline.high_price else 0,
             })
         
         logger.info(f"📊 股票数量: {len(df)}, 有历史数据的股票: {len(history_data)}")
@@ -238,25 +243,16 @@ class FactorCalculator:
             })
         logger.info(f"📊 上证指数历史数据: {len(index_history)}条")
 
-        # 计算 ma5, ma10, ma20（基于历史数据）
-        for idx in df.index:
-            stock_code = df.loc[idx, 'stock_code']
+        # 计算 ma5, ma10, ma20（基于历史数据，一次循环批量收集三列）
+        ma5_values, ma10_values, ma20_values = [], [], []
+        for stock_code in df['stock_code']:
             hist = history_data.get(stock_code, [])
-            
-            # ma5: 最近5天收盘价均值
-            if len(hist) >= 5:
-                ma5 = sum([h['close_price'] for h in hist[:5]]) / 5
-                df.loc[idx, 'ma5'] = ma5
-            
-            # ma10: 最近10天收盘价均值
-            if len(hist) >= 10:
-                ma10 = sum([h['close_price'] for h in hist[:10]]) / 10
-                df.loc[idx, 'ma10'] = ma10
-            
-            # ma20: 最近20天收盘价均值
-            if len(hist) >= 20:
-                ma20 = sum([h['close_price'] for h in hist[:20]]) / 20
-                df.loc[idx, 'ma20'] = ma20
+            ma5_values.append(sum(h['close_price'] for h in hist[:5]) / 5 if len(hist) >= 5 else 0.0)
+            ma10_values.append(sum(h['close_price'] for h in hist[:10]) / 10 if len(hist) >= 10 else 0.0)
+            ma20_values.append(sum(h['close_price'] for h in hist[:20]) / 20 if len(hist) >= 20 else 0.0)
+        df['ma5'] = ma5_values
+        df['ma10'] = ma10_values
+        df['ma20'] = ma20_values
 
         # 4. 从数据库加载因子定义，动态计算因子
         all_factor_map = self._get_factor_definitions(db_session)
@@ -272,7 +268,7 @@ class FactorCalculator:
         needed_factors = set()
         if score_expr and score_expr.factors:
             needed_factors = set(score_expr.factors)
-            logger.info(f"📊 表达式需要的因子: {needed_factors}")
+            logger.debug(f"📊 表达式需要的因子: {needed_factors}")
 
         # 递归查找所有依赖的因子（包括表达式因子的依赖）
         import re
@@ -303,11 +299,11 @@ class FactorCalculator:
 
         # 扩展依赖因子
         all_needed = find_dependencies(needed_factors, all_factor_map)
-        logger.info(f"📊 扩展后需要的因子（包括依赖）: {all_needed}")
+        logger.debug(f"📊 扩展后需要的因子（包括依赖）: {all_needed}")
 
         # 过滤 all_factor_map，保留表达式需要的因子及其依赖
         filtered_factor_map = {k: v for k, v in all_factor_map.items() if k in all_needed}
-        logger.info(f"📊 过滤后需要计算的因子: {list(filtered_factor_map.keys())}")
+        logger.debug(f"📊 过滤后需要计算的因子: {list(filtered_factor_map.keys())}")
 
         # 创建表达式解析器
         expr_parser = ExpressionParser(history_data)
@@ -325,17 +321,17 @@ class FactorCalculator:
                 avg_match = re.match(r'^AVG\s*\(\s*(\w+)\s*,\s*(\d+)(?:\s*,\s*(\d+))?\s*\)$', 
                                     factor_def.expression.strip(), re.IGNORECASE)
                 if avg_match:
-                    # 使用表达式解析器计算
-                    for idx in df.index:
-                        stock_code = df.loc[idx, 'stock_code']
-                        value = expr_parser.parse_and_calculate(
-                            factor_def.expression, 
-                            stock_code, 
+                    # 使用表达式解析器计算，批量收集后赋值
+                    col_values = []
+                    for stock_code in df['stock_code']:
+                        col_values.append(expr_parser.parse_and_calculate(
+                            factor_def.expression,
+                            stock_code,
                             list(df.columns)
-                        )
-                        df.loc[idx, factor_code] = value
+                        ))
+                    df[factor_code] = col_values
                     calculated_columns.add(factor_code)
-                    logger.info(f"✅ 计算因子 {factor_code} = {factor_def.expression}")
+                    logger.debug(f"✅ 计算因子 {factor_code} = {factor_def.expression}")
         
         # 4.1.1 处理 avg_* 计算方法（如 avg_3d, avg_10d 等）
         for factor_code, factor_def in all_factor_map.items():
@@ -343,30 +339,31 @@ class FactorCalculator:
                 # 解析 avg_3d, avg_5d, avg_10d, avg_20d, avg_4_20d, avg_11_30d 等
                 method = factor_def.calculation_method
                 
-                for idx in df.index:
-                    stock_code = df.loc[idx, 'stock_code']
+                col_values = []
+                for stock_code in df['stock_code']:
                     hist = history_data.get(stock_code, [])
-                    
+
                     value = 0
                     if method == 'avg_3d' and len(hist) >= 3:
-                        value = sum([h['turnover'] for h in hist[:3]]) / 3
+                        value = sum(h['turnover'] for h in hist[:3]) / 3
                     elif method == 'avg_5d' and len(hist) >= 5:
-                        value = sum([h['turnover'] for h in hist[:5]]) / 5
+                        value = sum(h['turnover'] for h in hist[:5]) / 5
                     elif method == 'avg_10d' and len(hist) >= 10:
-                        value = sum([h['turnover'] for h in hist[:10]]) / 10
+                        value = sum(h['turnover'] for h in hist[:10]) / 10
                     elif method == 'avg_20d' and len(hist) >= 20:
-                        value = sum([h['turnover'] for h in hist[:20]]) / 20
+                        value = sum(h['turnover'] for h in hist[:20]) / 20
                     elif method == 'avg_4_20d' and len(hist) >= 20:
                         # 4-20日平均: 第4天到第20天
-                        value = sum([h['turnover'] for h in hist[3:20]]) / 17 if len(hist) >= 20 else 0
+                        value = sum(h['turnover'] for h in hist[3:20]) / 17 if len(hist) >= 20 else 0
                     elif method == 'avg_11_30d' and len(hist) >= 30:
                         # 11-30日平均: 第11天到第30天
-                        value = sum([h['turnover'] for h in hist[10:30]]) / 20 if len(hist) >= 30 else 0
-                    
-                    df.loc[idx, factor_code] = value
+                        value = sum(h['turnover'] for h in hist[10:30]) / 20 if len(hist) >= 30 else 0
+                    col_values.append(value)
+
+                df[factor_code] = col_values
                 
                 calculated_columns.add(factor_code)
-                logger.info(f"✅ 计算因子 {factor_code} = {method}")
+                logger.debug(f"✅ 计算因子 {factor_code} = {method}")
         
         # 4.1.2 处理 turnover_ma 计算方法（动态天数区间）
         # 支持 days_range 字段，如 "1_3"(最近3天), "4_20"(第4-20天)
@@ -374,7 +371,7 @@ class FactorCalculator:
             method = getattr(factor_def, 'calculation_method', None)
             days_range = getattr(factor_def, 'days_range', None)
             if method == 'turnover_ma' and days_range:
-                logger.info(f"🔍 处理 turnover_ma 因子: {factor_code}, days_range={days_range}")
+                logger.debug(f"🔍 处理 turnover_ma 因子: {factor_code}, days_range={days_range}")
                 # 解析 days_range: "1_3" 表示第1-3天, "4_20" 表示第4-20天
                 try:
                     if '_' in days_range:
@@ -390,28 +387,27 @@ class FactorCalculator:
                     start_day = 1
                     end_day = 3
                 
-                for idx in df.index:
-                    stock_code = df.loc[idx, 'stock_code']
+                col_values = []
+                for stock_code in df['stock_code']:
                     hist = history_data.get(stock_code, [])
-                    
+
                     value = 0
                     if start_day == 1:
                         # 最近N天: 从最近一天开始取
                         if len(hist) >= end_day:
                             values = [h['turnover'] for h in hist[:end_day]]
                             value = sum(values) / len(values) if values else 0
-                            logger.info(f"  股票 {stock_code}: 最近{end_day}天, hist长度={len(hist)}, values前3={values[:3] if values else []}, avg={value}")
                     else:
                         # 区间: start_day 到 end_day
                         if len(hist) >= end_day:
                             values = [h['turnover'] for h in hist[start_day-1:end_day]]
                             value = sum(values) / len(values) if values else 0
-                            logger.info(f"  股票 {stock_code}: 区间{start_day}-{end_day}天, values前3={values[:3] if values else []}, avg={value}")
-                    
-                    df.loc[idx, factor_code] = value
+                    col_values.append(value)
+
+                df[factor_code] = col_values
                 
                 calculated_columns.add(factor_code)
-                logger.info(f"✅ 计算因子 {factor_code} = turnover_ma 完成")
+                logger.debug(f"✅ 计算因子 {factor_code} = turnover_ma 完成")
         
         # 4.2 处理简单的 kline_field（直接取值）
         # 这些已经在步骤2中处理了
@@ -445,18 +441,16 @@ class FactorCalculator:
                 }
                 source_field = field_map.get(field_name, field_name)
 
-                for idx in df.index:
-                    stock_code = df.loc[idx, 'stock_code']
+                col_values = []
+                for stock_code in df['stock_code']:
                     hist = history_data.get(stock_code, [])
                     # 获取历史数据（根据 days_offset）
                     # days_offset=0 当日, =1 昨日, =2 前日...
-                    if len(hist) > days_offset:
-                        df.loc[idx, factor_code] = hist[days_offset].get(source_field, 0)
-                    else:
-                        df.loc[idx, factor_code] = 0.0
+                    col_values.append(hist[days_offset].get(source_field, 0) if len(hist) > days_offset else 0.0)
+                df[factor_code] = col_values
 
                 calculated_columns.add(factor_code)
-                logger.info(f"✅ 处理 kline_field 因子 {factor_code}, days_offset={days_offset}")
+                logger.debug(f"✅ 处理 kline_field 因子 {factor_code}, days_offset={days_offset}")
         
         # 4.4.1 处理均线类因子（包含当日和历史）
         # ma5, ma10, ma20 等：通过 days_offset 配置获取当日或历史的均线
@@ -467,30 +461,56 @@ class FactorCalculator:
                 ma_field = factor_def.field_name  # ma5, ma10, ma20...
                 ma_days = int(ma_field[2:])  # 提取天数：5, 10, 20...
                 
-                for idx in df.index:
-                    stock_code = df.loc[idx, 'stock_code']
+                col_values = []
+                for stock_code in df['stock_code']:
                     hist = history_data.get(stock_code, [])
-                    
+
                     value = 0
                     if days_offset == 0:
                         # 当日均线：从预计算字段获取（已在步骤2处理）
-                        # 如果历史数据中有当日均线，直接使用
                         if len(hist) >= ma_days:
-                            ma_sum = sum([h['close_price'] for h in hist[:ma_days] if h.get('close_price')])
+                            ma_sum = sum(h['close_price'] for h in hist[:ma_days] if h.get('close_price'))
                             value = ma_sum / ma_days
                     else:
                         # 历史均线：从指定偏移日期开始计算
-                        # days_offset=1 表示昨日，需要从 hist[1] 开始取 N 天
-                        # hist[0]=今日, hist[1]=昨日, hist[2]=前日...
                         if len(hist) >= days_offset + ma_days:
-                            # 从历史数据中取对应偏移的均线
-                            ma_sum = sum([h['close_price'] for h in hist[days_offset:days_offset+ma_days] if h.get('close_price')])
+                            ma_sum = sum(h['close_price'] for h in hist[days_offset:days_offset+ma_days] if h.get('close_price'))
                             value = ma_sum / ma_days
-                    
-                    df.loc[idx, factor_code] = value
+                    col_values.append(value)
+
+                df[factor_code] = col_values
                 
                 calculated_columns.add(factor_code)
-                logger.info(f"✅ 计算均线因子 {factor_code}, days_offset={days_offset}")
+                logger.debug(f"✅ 计算均线因子 {factor_code}, days_offset={days_offset}")
+
+        # 4.4.2 处理新高因子（近N日最高价）
+        for factor_code, factor_def in all_factor_map.items():
+            if factor_def.calculation_method == 'new_high':
+                # days_range 表示统计天数，如 120 表示近120日新高
+                days_range = int(factor_def.days_range) if factor_def.days_range else 120
+                
+                logger.debug(f"🔍 计算 new_high 因子 {factor_code}, days_range={days_range}")
+                
+                col_values = []
+                for idx in df.index:
+                    stock_code = df.loc[idx, 'stock_code']
+                    hist = history_data.get(stock_code, [])
+
+                    # 需要至少 days_range 天的数据（昨日到days_range天前，共days_range天）
+                    if len(hist) >= days_range:
+                        past_high_prices = [h['high_price'] for h in hist[1:days_range+1] if h.get('high_price')]
+                        max_high_price = max(past_high_prices) if past_high_prices else 0
+                        today_close = df.loc[idx, 'close_price']
+                        logger.debug(f"股票 {stock_code}: 今日收盘={today_close}, 过去{days_range}天最高价={max_high_price}")
+                        col_values.append(today_close > max_high_price)
+                    else:
+                        logger.warning(f"股票 {stock_code} 历史数据不足 {days_range} 天，仅有 {len(hist)} 天")
+                        col_values.append(False)
+
+                df[factor_code] = col_values
+                
+                calculated_columns.add(factor_code)
+                logger.debug(f"✅ 计算新高因子 {factor_code}, days_range={days_range}")
 
         # 4.5 计算成交额排名得分（factor1_rank）- 直接用 turnover 计算
         # 排名第一为10分，每下降一名减0.2，最低为0
@@ -504,12 +524,23 @@ class FactorCalculator:
         
         # 4.6 计算表达式依赖的原子因子（昨日收盘价等）
         # 从历史数据中获取昨日值 - 作为备用逻辑，如果因子表未配置则使用
-        for idx, row in df.iterrows():
-            code = row['stock_code']
-            if code in history_data and len(history_data[code]) >= 2:
-                # close_price_y1: 昨日收盘价（历史数据中 index 1 是前一天）
-                if 'close_price_y1' not in df.columns or df.loc[idx, 'close_price_y1'] == 0:
-                    df.loc[idx, 'close_price_y1'] = history_data[code][1].get('close_price', 0)
+        if 'close_price_y1' not in df.columns:
+            df['close_price_y1'] = [
+                history_data[row['stock_code']][1].get('close_price', 0)
+                if row['stock_code'] in history_data and len(history_data[row['stock_code']]) >= 2
+                else 0
+                for _, row in df.iterrows()
+            ]
+        else:
+            # 仅填充值为0的行
+            mask = df['close_price_y1'] == 0
+            if mask.any():
+                df.loc[mask, 'close_price_y1'] = [
+                    history_data[row['stock_code']][1].get('close_price', 0)
+                    if row['stock_code'] in history_data and len(history_data[row['stock_code']]) >= 2
+                    else 0
+                    for _, row in df[mask].iterrows()
+                ]
         
         # 确保历史均线因子存在于 df 中
         if 'ma5' not in df.columns:
@@ -524,53 +555,66 @@ class FactorCalculator:
             if col not in df.columns:
                 df[col] = 0.0
             df[col] = df[col].fillna(0)
-        
-        logger.info(f"📊 原子因子计算完成，列: {list(df.columns)}")
-        
+
+
+        # 在步骤7前统一做一次 df.to_dict('records')，后续各步骤增量更新，避免重复全量序列化
+        records = df.to_dict('records')
+
         # 7. 使用表达式计算最终得分因子（非AVG类型的表达式）
         # 从数据库表达式定义中获取每个因子的表达式并计算
         calculated_factors = set()
-        
+
         # 遍历所有因子定义，找到需要使用表达式计算的因子
         for factor_code, factor_def in all_factor_map.items():
             # 跳过已经计算过的AVG表达式因子
             if factor_code in calculated_columns:
                 continue
-                
+
             if factor_def.calculation_method == 'expression' and factor_def.expression:
                 try:
-                    # 使用表达式计算因子值
-                    df[factor_code] = self._evaluate_expression(
-                        factor_def.expression,
-                        df.to_dict('records')
-                    )
+                    # 使用表达式计算因子值，复用已有 records
+                    values = self._evaluate_expression(factor_def.expression, records)
+                    df[factor_code] = values
+                    # 增量更新 records，供后续因子表达式依赖
+                    for rec, val in zip(records, values):
+                        rec[factor_code] = val
                     calculated_factors.add(factor_code)
-                    logger.info(f"✅ 因子 {factor_code} 使用表达式计算成功")
+                    logger.debug(f"✅ 因子 {factor_code} 使用表达式计算成功")
                 except Exception as e:
                     logger.warning(f"⚠️ 因子 {factor_code} 表达式计算失败: {e}，设为0")
                     df[factor_code] = 0.0
-        
+                    for rec in records:
+                        rec[factor_code] = 0.0
+
         logger.info(f"📊 表达式因子计算完成: {calculated_factors}")
-        
+
         # 7.5 计算偏离值因子（在表达式因子计算之前）
         # deviation_10d, deviation_30d 是 python 类型，remaining_deviation 依赖它们
         self._calculate_deviation_factors(df, history_data, all_factor_map, db_session, trade_date)
         logger.info(f"📊 偏离值: 10天累计={df['deviation_10d'].mean():.2f}, 30天累计={df['deviation_30d'].mean():.2f}, 剩余={df['remaining_deviation'].mean():.2f}")
-        
+
+        # 将偏离值新列增量同步到 records（只更新三列，避免全量重建）
+        for rec, dev10, dev30, rem in zip(
+            records, df['deviation_10d'], df['deviation_30d'], df['remaining_deviation']
+        ):
+            rec['deviation_10d'] = dev10
+            rec['deviation_30d'] = dev30
+            rec['remaining_deviation'] = rem
+
         # 7.6 重新计算依赖偏离值因子的表达式因子（如 remaining_deviation）
         for factor_code, factor_def in all_factor_map.items():
             if factor_def.calculation_method == 'expression' and factor_def.expression:
                 # 检查表达式是否依赖偏离值因子
                 if 'deviation_10d' in factor_def.expression or 'deviation_30d' in factor_def.expression or 'remaining_deviation' in factor_def.expression:
                     try:
-                        df[factor_code] = self._evaluate_expression(
-                            factor_def.expression,
-                            df.to_dict('records')
-                        )
-                        logger.info(f"✅ 重新计算依赖偏离值的因子 {factor_code}")
+                        values = self._evaluate_expression(factor_def.expression, records)
+                        df[factor_code] = values
+                        for rec, val in zip(records, values):
+                            rec[factor_code] = val
+                        logger.debug(f"✅ 重新计算依赖偏离值的因子 {factor_code}")
                     except Exception as e:
                         logger.warning(f"⚠️ 因子 {factor_code} 重新计算失败: {e}")
-        
+
         # 8. 计算 Python 因子（通过 calculation_method 调用）
         # 在 all_factor_map 中查找需要用 Python 代码计算的因子
         # 注意：偏离值因子已在上面计算，这里只处理其他 Python 因子
@@ -581,23 +625,17 @@ class FactorCalculator:
                 if factor_code in ['deviation_10d', 'deviation_30d']:
                     calculated_columns.add(factor_code)
                     continue
-                logger.info(f"🔍 计算 Python 因子: {factor_code}, method={factor_def.calculation_method}")
-        
+                logger.debug(f"🔍 计算 Python 因子: {factor_code}, method={factor_def.calculation_method}")
+
         logger.info(f"📊 Python 因子计算完成: {list(calculated_columns)}")
-        
-        # 9. 获取股票得分表达式
-        score_expr = ScoreExpression.query.filter_by(
-            scope='stock',
-            is_default=True,
-            is_active=True
-        ).first()
-        
+
+        # 9. 计算总分（score_expr 在步骤4已查询，此处直接复用；records 已与 df 同步，无需重建）
         # 计算总分（使用表达式因子计算后的结果）
         if score_expr and score_expr.expression:
             # 计算总分
             df['total_score'] = self._evaluate_expression(
                 score_expr.expression,
-                df.to_dict('records')
+                records  # 复用已同步的 records，无需再次 df.to_dict('records')
             )
         else:
             # 使用默认总分计算：所有因子得分之和
@@ -695,26 +733,28 @@ class FactorCalculator:
             index_pct = (index_end_close / index_pre_close - 1) * 100
             
             # 为每只股票计算偏离值
+            col_values = []
             for idx in df.index:
                 stock_code = df.loc[idx, 'stock_code']
                 stock_hist = history_data.get(stock_code, [])
-                
+
                 if len(stock_hist) < required_days:
-                    df.loc[idx, factor_code] = 0.0
+                    col_values.append(0.0)
                     continue
-                
+
                 stock_end_close = stock_hist[0]['close_price']
                 stock_pre_close = stock_hist[days_range]['close_price']
-                
+
                 if stock_pre_close <= 0 or stock_end_close <= 0:
-                    df.loc[idx, factor_code] = 0.0
+                    col_values.append(0.0)
                     continue
-                
+
                 # 个股区间涨跌幅
                 stock_pct = (stock_end_close / stock_pre_close - 1) * 100
                 # 偏离值 = 个股涨跌幅 - 指数涨跌幅
-                deviation = round(stock_pct - index_pct, 2)
-                df.loc[idx, factor_code] = deviation
+                col_values.append(round(stock_pct - index_pct, 2))
+
+            df[factor_code] = col_values
         
         # 计算 remaining_deviation（基于配置的 days_offset）
         remaining_def = all_factor_map.get('remaining_deviation')
@@ -725,16 +765,18 @@ class FactorCalculator:
             threshold_30d_pos = 200
             threshold_30d_neg = -70
             
+            remaining_values = []
             for idx in df.index:
                 dev_10d = df.loc[idx, 'deviation_10d']
                 dev_30d = df.loc[idx, 'deviation_30d']
-                
+
                 # 计算剩余偏离值
                 remaining_10d = threshold_10d_pos - dev_10d if dev_10d > 0 else threshold_10d_neg - dev_10d
                 remaining_30d = threshold_30d_pos - dev_30d if dev_30d > 0 else threshold_30d_neg - dev_30d
-                
+
                 # 取最小的剩余偏离值（最接近阈值）
-                df.loc[idx, 'remaining_deviation'] = round(min(remaining_10d, remaining_30d), 2)
+                remaining_values.append(round(min(remaining_10d, remaining_30d), 2))
+            df['remaining_deviation'] = remaining_values
         else:
             df['remaining_deviation'] = 0.0
     
@@ -897,7 +939,7 @@ class FactorCalculator:
         
         logger.info(f"📊 查询到 {len(market_factors)} 个大盘因子定义")
         for f in market_factors:
-            logger.info(f"  - {f.factor_code}: {f.factor_name}, source={f.source}, method={f.calculation_method}, expression={f.expression}")
+            logger.debug(f"  - {f.factor_code}: {f.factor_name}, source={f.source}, method={f.calculation_method}, expression={f.expression}")
         
         if not market_factors:
             # 返回默认大盘因子
@@ -912,7 +954,7 @@ class FactorCalculator:
                 index_kline = self._get_index_kline(factor.index_code, trade_date, db_session)
                 if index_kline:
                     market_data[factor.factor_code] = getattr(index_kline, factor.field_name, 0)
-                    logger.info(f"✅ K线因子 {factor.factor_code} = {market_data[factor.factor_code]}, 指数={factor.index_code}, 字段={factor.field_name}")
+                    logger.debug(f"✅ K线因子 {factor.factor_code} = {market_data[factor.factor_code]}, 指数={factor.index_code}, 字段={factor.field_name}")
         
         # 第二遍：处理 python 类型的因子（通过Python方法计算）
         for factor in market_factors:
@@ -922,10 +964,10 @@ class FactorCalculator:
                 if isinstance(value, dict):
                     for k, v in value.items():
                         market_data[k] = v
-                    logger.info(f"✅ Python因子 {factor.factor_code} 返回字典: {value}")
+                    logger.debug(f"✅ Python因子 {factor.factor_code} 返回字典: {value}")
                 else:
                     market_data[factor.factor_code] = value
-                    logger.info(f"✅ Python因子 {factor.factor_code} = {value}")
+                    logger.debug(f"✅ Python因子 {factor.factor_code} = {value}")
         
         # 第三遍：处理 calculated 类型的因子（通过表达式计算）
         # 注意：为了确保依赖关系正确，先计算除 market_score 以外的所有因子，
@@ -942,7 +984,7 @@ class FactorCalculator:
                     factor.expression, market_data
                 )
                 market_data[factor.factor_code] = result
-                logger.info(f"✅ 计算派生因子 {factor.factor_code} = {result}, 表达式: {factor.expression}")
+                logger.debug(f"✅ 计算派生因子 {factor.factor_code} = {result}, 表达式: {factor.expression}")
         
         # 最后再计算一次 market_score（如果存在）
         for factor in deferred_calculated_factors:
@@ -960,7 +1002,7 @@ class FactorCalculator:
         根据 calculation_method 调用相应的Python计算方法
         """
         calc_method = factor.calculation_method
-        logger.info(f"🔍 处理因子 {factor.factor_code}, calculation_method={calc_method}")
+        logger.debug(f"🔍 处理因子 {factor.factor_code}, calculation_method={calc_method}")
         
         if calc_method == 'up_down_ratio':
             return self._calculate_up_down_ratio(trade_date, db_session)
@@ -969,11 +1011,11 @@ class FactorCalculator:
             return self._calculate_up_down_ratio_top50(trade_date, db_session)
         
         elif calc_method == 'ma5_trend_score':
-            ma5_score, ma10_score = self._calculate_trend_scores(trade_date, db_session)
+            ma5_score, ma10_score = self._get_trend_scores_cached(trade_date, db_session)
             return ma5_score
-        
+
         elif calc_method == 'ma10_trend_score':
-            ma5_score, ma10_score = self._calculate_trend_scores(trade_date, db_session)
+            ma5_score, ma10_score = self._get_trend_scores_cached(trade_date, db_session)
             return ma10_score
         
         elif calc_method == 'prev_trade_turnover':
@@ -1129,7 +1171,7 @@ class FactorCalculator:
             'down_count': down_count,
             'total_count': up_count + down_count
         }
-        logger.info(f"📊 _calculate_up_down_count: {result}")
+        logger.debug(f"📊 _calculate_up_down_count: {result}")
         return result
     
     def _calculate_up_down_count_top50(self, trade_date: str, db_session) -> Dict:
@@ -1249,6 +1291,14 @@ class FactorCalculator:
         
         return round(avg_pct, 2)
     
+    def _get_trend_scores_cached(self, trade_date: str, db_session) -> tuple:
+        """缓存趋势得分，同一 trade_date 只计算一次（避免 ma5/ma10 两个因子重复触发 DB 查询）"""
+        if not hasattr(self, '_trend_score_cache'):
+            self._trend_score_cache = {}
+        if trade_date not in self._trend_score_cache:
+            self._trend_score_cache[trade_date] = self._calculate_trend_scores(trade_date, db_session)
+        return self._trend_score_cache[trade_date]
+
     def _calculate_trend_scores(self, trade_date: str, db_session) -> tuple:
         """
         计算上证指数的多头趋势得分
@@ -1372,43 +1422,6 @@ class FactorCalculator:
             StockDailyKLine.stock_code == index_code,
             StockDailyKLine.trade_date == prev_date
         ).first()
-    
-    def _get_stock_history(self, stock_codes: List[str], trade_date: str, db_session) -> Dict:
-        """
-        获取股票历史K线数据
-        用于计算需要历史数据的因子
-        """
-        import datetime
-        
-        # 计算需要获取的历史日期范围
-        # 需要获取至少45个交易日的数据（确保有21天计算ma20_y1）
-        end_date = datetime.datetime.strptime(trade_date, '%Y-%m-%d')
-        start_date = end_date - datetime.timedelta(days=45)  # 多取一些天数确保有足够交易日
-        
-        start_str = start_date.strftime('%Y-%m-%d')
-        
-        # 批量查询历史K线（不包含当天，用于计算ma20_y1）
-        history_data = {}
-        
-        klines = db_session.query(StockDailyKLine).filter(
-            StockDailyKLine.stock_code.in_(stock_codes),
-            StockDailyKLine.trade_date >= start_str,
-            StockDailyKLine.trade_date <= trade_date  # 包含当天
-        ).order_by(StockDailyKLine.stock_code, StockDailyKLine.trade_date.desc()).all()
-        
-        # 按股票代码分组
-        for kline in klines:
-            code = kline.stock_code
-            if code not in history_data:
-                history_data[code] = []
-            history_data[code].append({
-                'trade_date': kline.trade_date,
-                'close_price': float(kline.close_price) if kline.close_price else 0,
-                'volume': float(kline.volume) if kline.volume else 0,
-                'turnover': float(kline.turnover) if kline.turnover else 0,
-            })
-        
-        return history_data
     
     def _calculate_rank_score(self, df: pd.DataFrame, field_name: str = 'turnover') -> pd.Series:
         """
