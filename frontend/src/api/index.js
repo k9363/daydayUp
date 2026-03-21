@@ -246,6 +246,16 @@ export function removeStockFromSector(data) {
   return request.delete('/metadata/stock-sector', { data })
 }
 
+// 获取单只股票的板块列表
+export function getStockSectors(stockCode) {
+  return request.get(`/metadata/stock/${stockCode}/sectors`)
+}
+
+// 批量获取多只股票的板块
+export function getBatchStockSectors(stockCodes) {
+  return request.post('/metadata/stocks/sectors', { stock_codes: stockCodes })
+}
+
 // 创建新板块
 export function createSector(data) {
   return request.post('/metadata/sectors', data)

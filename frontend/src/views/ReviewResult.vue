@@ -197,6 +197,9 @@
               <el-button type="primary" link size="small" @click="showStockFactorTree(row)">
                 因子详情
               </el-button>
+              <el-button type="info" link size="small" @click="openSectorDialog(row)">
+                板块
+              </el-button>
               <el-button type="warning" link size="small" @click="openTagDialog(row)">
                 标签
               </el-button>
@@ -410,6 +413,57 @@
         </template>
       </el-dialog>
 
+      <!-- 板块管理弹窗 -->
+      <el-dialog
+        v-model="showSectorDialog"
+        :title="'选择板块 - ' + (currentSectorStock ? currentSectorStock.code + ' ' + currentSectorStock.name : '')"
+        width="600px"
+      >
+        <div v-loading="sectorDialogLoading">
+          <!-- 已选板块 -->
+          <div v-if="currentSectorStock && stockSectorsMap[currentSectorStock.code] && stockSectorsMap[currentSectorStock.code].length > 0" class="selected-sectors">
+            <div class="section-title">已选板块：</div>
+            <el-tag
+              v-for="sector in stockSectorsMap[currentSectorStock.code]"
+              :key="sector.sector_name"
+              type="info"
+              size="large"
+              closable
+              class="sector-tag"
+              @close="handleRemoveFromSector(sector.sector_code)"
+            >
+              {{ sector.sector_name }}
+            </el-tag>
+          </div>
+          <div v-else class="no-sectors">
+            暂无所属板块
+          </div>
+
+          <el-divider />
+
+          <!-- 添加板块 -->
+          <div class="add-sector">
+            <div class="section-title">添加板块：</div>
+            <el-select
+              v-model="selectedSectorId"
+              placeholder="请选择或搜索板块"
+              size="large"
+              style="width: 100%"
+              filterable
+              :filter-method="sectorFilterMethod"
+              @change="handleAddToSector"
+            >
+              <el-option
+                v-for="sector in filteredSectors"
+                :key="sector.id"
+                :label="sector.sector_name"
+                :value="sector.id"
+              />
+            </el-select>
+          </div>
+        </div>
+      </el-dialog>
+
       <!-- 标签管理弹窗 -->
       <el-dialog
         v-model="showTagDialog"
@@ -483,7 +537,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { Refresh, Grid, Monitor, Connection, Trophy, DocumentChecked, Edit, Delete, Check, Close } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
-import { getSectorStocks, getTags, addTag, updateTag, deleteTag, addStockTag, removeStockTag, getBatchStockTags, getDailyNote, saveDailyNote, getCycleByDate } from '@/api'
+import { getSectorStocks, getAllSectors, getStockSectors, getBatchStockSectors, addStockToSector, removeStockFromSector, getTags, addTag, updateTag, deleteTag, addStockTag, removeStockTag, getBatchStockTags, getDailyNote, saveDailyNote, getCycleByDate } from '@/api'
 import 'quill/dist/quill.snow.css'
 
 let Quill = null
@@ -513,6 +567,32 @@ const currentTradeDate = ref('')
 
 // 周期信息
 const cycleInfo = ref(null)
+
+// 板块管理
+const showSectorDialog = ref(false)
+const sectorDialogLoading = ref(false)
+const currentSectorStock = ref(null)
+const allSectors = ref([])
+const selectedSectorId = ref(null)
+const stockSectorsMap = ref({})  // { stock_code: [sector1, sector2, ...] }
+const sectorSearchText = ref('')
+
+// 过滤后的板块列表
+const filteredSectors = computed(() => {
+  if (!sectorSearchText.value) {
+    return allSectors.value
+  }
+  const search = sectorSearchText.value.toLowerCase()
+  return allSectors.value.filter(s => 
+    s.sector_name.toLowerCase().includes(search) ||
+    (s.sector_code && s.sector_code.toLowerCase().includes(search))
+  )
+})
+
+// 板块搜索过滤方法
+const sectorFilterMethod = (value) => {
+  sectorSearchText.value = value
+}
 
 const periodTypeMap = {
   chaos: { name: '混沌', type: 'warning' },
@@ -955,6 +1035,20 @@ const loadBatchStockTags = async (stockCodes) => {
   }
 }
 
+// 批量加载股票板块
+const loadBatchStockSectors = async (stockCodes) => {
+  if (!stockCodes || stockCodes.length === 0) return
+  try {
+    const res = await getBatchStockSectors(stockCodes)
+    if (res.code === 200) {
+      // 将 { stock_code: [sectors] } 转换为 stockSectorsMap 格式
+      stockSectorsMap.value = res.data || {}
+    }
+  } catch (error) {
+    console.error('获取股票板块失败:', error)
+  }
+}
+
 // 打开标签管理弹窗
 const openTagDialog = async (stock) => {
   currentTagStock.value = stock
@@ -963,6 +1057,118 @@ const openTagDialog = async (stock) => {
   await loadAllTags()
   // 加载当前股票的标签
   await loadBatchStockTags([stock.code])
+}
+
+// 打开板块管理弹窗
+const openSectorDialog = async (stock) => {
+  currentSectorStock.value = stock
+  showSectorDialog.value = true
+  sectorDialogLoading.value = true
+  selectedSectorId.value = null
+  sectorSearchText.value = ''
+  try {
+    // 加载所有板块
+    const sectorRes = await getAllSectors()
+    if (sectorRes.code === 200) {
+      allSectors.value = sectorRes.data || []
+    }
+    // 加载当前股票的板块信息
+    await loadStockSectors(stock.code)
+  } catch (e) {
+    console.error('加载板块数据失败:', e)
+  } finally {
+    sectorDialogLoading.value = false
+  }
+}
+
+// 加载单个股票的板块信息
+const loadStockSectors = async (stockCode) => {
+  try {
+    const res = await getStockSectors(stockCode)
+    if (res.code === 200) {
+      stockSectorsMap.value[stockCode] = res.data || []
+    } else {
+      stockSectorsMap.value[stockCode] = []
+    }
+  } catch (e) {
+    console.error('获取股票板块失败:', e)
+    stockSectorsMap.value[stockCode] = []
+  }
+}
+
+// 添加股票到板块
+const handleAddToSector = async () => {
+  if (!currentSectorStock.value || !selectedSectorId.value) return
+  try {
+    const res = await addStockToSector({
+      stock_code: currentSectorStock.value.code,
+      sector_id: selectedSectorId.value
+    })
+    if (res.code === 200) {
+      ElMessage.success('添加板块成功')
+      // 刷新板块信息 - 直接更新 stockSectorsMap
+      const sectorsRes = await getStockSectors(currentSectorStock.value.code)
+      if (sectorsRes.code === 200) {
+        stockSectorsMap.value[currentSectorStock.value.code] = sectorsRes.data || []
+      }
+      // 更新表格中的板块显示
+      updateStockSectorInTable(currentSectorStock.value.code)
+      selectedSectorId.value = null
+      sectorSearchText.value = ''
+    } else {
+      ElMessage.error(res.message || '添加板块失败: ' + res.message)
+    }
+  } catch (e) {
+    console.error('添加板块失败:', e)
+    ElMessage.error('添加板块失败')
+  }
+}
+
+// 从板块移除股票
+const handleRemoveFromSector = async (sectorCode) => {
+  if (!currentSectorStock.value) return
+  // 找到对应的 sector_id
+  const sector = allSectors.value.find(s => s.sector_code === sectorCode)
+  if (!sector) {
+    // 如果找不到，尝试用 sector_name 查找（兼容旧数据）
+    const sectorByName = allSectors.value.find(s => s.sector_name === sectorCode)
+    if (!sectorByName) {
+      ElMessage.error('未找到对应板块')
+      return
+    }
+    sector.id = sectorByName.id
+  }
+  try {
+    const res = await removeStockFromSector({
+      stock_code: currentSectorStock.value.code,
+      sector_id: sector.id
+    })
+    if (res.code === 200) {
+      ElMessage.success('移除板块成功')
+      // 刷新板块信息
+      await loadStockSectors(currentSectorStock.value.code)
+      // 更新表格中的板块显示
+      updateStockSectorInTable(currentSectorStock.value.code)
+    } else {
+      ElMessage.error(res.message || '移除失败')
+    }
+  } catch (e) {
+    console.error('移除板块失败:', e)
+    ElMessage.error('移除板块失败')
+  }
+}
+
+// 更新表格中的板块显示
+const updateStockSectorInTable = (stockCode) => {
+  const sectors = stockSectorsMap.value[stockCode] || []
+  const sectorStr = sectors.map(s => s.sector_name).join(',')
+  // 更新 chartData 中的数据
+  if (chartData.value?.top10FactorStocks) {
+    const stock = chartData.value.top10FactorStocks.find(s => s.code === stockCode)
+    if (stock) {
+      stock.sector = sectorStr
+    }
+  }
 }
 
 // 直接从股票行删除标签关联
@@ -1251,6 +1457,8 @@ const fetchChartData = async () => {
       const stockCodes = (chartData.value?.top10FactorStocks || []).map(s => s.code)
       if (stockCodes.length > 0) {
         await loadBatchStockTags(stockCodes)
+        // 批量加载股票板块
+        await loadBatchStockSectors(stockCodes)
       }
     } else {
       error.value = result.message || '获取数据失败'
@@ -1912,6 +2120,34 @@ watch(() => chartData.value, () => {
 /* 标签管理样式 */
 .tag-management {
   padding: 10px 0;
+}
+
+/* 板块管理样式 */
+.selected-sectors {
+  margin-bottom: 16px;
+}
+
+.selected-sectors .section-title,
+.add-sector .section-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: #606266;
+  margin-bottom: 12px;
+}
+
+.sector-tag {
+  margin-right: 8px;
+  margin-bottom: 8px;
+}
+
+.no-sectors {
+  color: #909399;
+  font-size: 14px;
+  padding: 10px 0;
+}
+
+.add-sector {
+  margin-top: 10px;
 }
 
 .tag-list {

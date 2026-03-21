@@ -164,7 +164,19 @@
             <el-option label="排名得分" value="rank" />
             <el-option label="表达式计算" value="expression" />
             <el-option label="成交额均线" value="turnover_ma" />
+            <el-option label="新高判断" value="new_high" />
           </el-select>
+        </el-form-item>
+        
+        <!-- 新高判断配置 -->
+        <el-form-item v-if="form.source === 'kline' && form.calculation_method === 'new_high'" label="天数配置" prop="days_range">
+          <div class="new-high-config">
+            <el-input-number v-model="newHighDays" :min="1" :max="250" @change="updateFactorCode" />
+            <span class="hint">个交易日</span>
+            <div style="margin-top: 5px; color: #909399; font-size: 12px;">
+              预览因子代码: <code>{{ form.factor_code || 'new_high_X' }}</code>
+            </div>
+          </div>
         </el-form-item>
         
         <!-- 成交额均线配置 -->
@@ -296,7 +308,7 @@
         </el-form-item>
         
         <!-- K线字段选择 -->
-        <el-form-item v-if="form.source === 'kline'" label="字段选择" prop="field_name">
+        <el-form-item v-if="form.source === 'kline' && form.calculation_method !== 'new_high' && form.calculation_method !== 'turnover_ma'" label="字段选择" prop="field_name">
           <el-select v-model="form.field_name" placeholder="选择字段" filterable @change="handleFieldChange">
             <el-optgroup v-for="group in klineFieldGroups" :key="group.label" :label="group.label">
               <el-option v-for="f in group.options" :key="f.value" :label="f.label" :value="f.value" />
@@ -305,7 +317,7 @@
         </el-form-item>
         
         <!-- 日期偏移配置 -->
-        <el-form-item v-if="form.source === 'kline'" label="日期偏移" prop="days_offset">
+        <el-form-item v-if="form.source === 'kline' && form.calculation_method !== 'new_high' && form.calculation_method !== 'turnover_ma'" label="日期偏移" prop="days_offset">
           <div class="offset-config">
             <el-input-number v-model="form.days_offset" :min="0" :max="120" :step="1" />
             <span class="hint">
@@ -408,6 +420,8 @@ export default {
       maDays: 3,
       maStart: 4,
       maEnd: 20,
+      // 新高判断配置
+      newHighDays: 120,
       rules: {
         factor_code: [{ required: true, message: '请输入因子代码', trigger: 'blur' }],
         factor_name: [{ required: true, message: '请输入因子名称', trigger: 'blur' }],
@@ -587,6 +601,11 @@ export default {
         }
       }
       
+      // 如果是新高判断因子，回显天数配置
+      if (row.calculation_method === 'new_high' && row.days_range) {
+        this.newHighDays = parseInt(row.days_range)
+      }
+      
       this.dialogVisible = true
     },
     
@@ -645,6 +664,10 @@ export default {
         this.maStart = 4
         this.maEnd = 20
         this.updateFactorCode()
+      } else if (this.form.calculation_method === 'new_high') {
+        // 初始化新高判断配置
+        this.newHighDays = 120
+        this.updateFactorCode()
       }
     },
     
@@ -664,6 +687,11 @@ export default {
           this.form.factor_name = `${this.maStart}-${this.maEnd}日平均成交额`
         }
         this.form.field_name = 'turnover'
+      } else if (this.form.calculation_method === 'new_high') {
+        this.form.days_range = String(this.newHighDays)
+        this.form.factor_code = `new_high_${this.newHighDays}`
+        this.form.factor_name = `新高${this.newHighDays}日`
+        this.form.field_name = 'close_price'
       }
     },
     
@@ -822,6 +850,10 @@ export default {
 }
 
 .ma-config {
+  width: 100%;
+}
+
+.new-high-config {
   width: 100%;
 }
 
