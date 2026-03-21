@@ -1038,7 +1038,12 @@ class FactorCalculator:
         elif calc_method == 'top20_avg_price':
             # 大盘因子：昨日成交额前20的股票在今天的平均价格
             return self._calculate_top20_avg_price(trade_date, db_session)
-        
+
+        elif calc_method == 'macd_top_div_score':
+            # 大盘因子：上证指数 MACD 日线顶背离得分（0~10）
+            index_code = getattr(factor, 'index_code', None) or 'sh.000001'
+            return self._calculate_macd_top_div_score(index_code, trade_date, db_session)
+
         else:
             logger.warning(f"未知的 Python 计算方法: {calc_method}")
             return 0
@@ -1290,7 +1295,107 @@ class FactorCalculator:
         logger.info(f"📊 昨日成交额前20股票今日平均涨幅: {avg_pct:.2f}% (共{len(today_pct_changes)}只)")
         
         return round(avg_pct, 2)
-    
+
+    def _calculate_macd_top_div_score(self, index_code: str, trade_date: str, db_session) -> float:
+        """
+        计算指数 MACD 日线顶背离得分（0~10）
+
+        算法：
+        1. 取近 60 交易日收盘价（+额外 26+9=35 天 EMA 预热，共查 ~100 天）
+        2. 计算 DIF = EMA12 - EMA26，DEA = EMA9(DIF)
+        3. 在近 60 交易日内用滑动窗口检测价格局部最高点（波峰）
+        4. 取最近两个波峰，判断顶背离：峰2价格 > 峰1价格 且 峰2 DIF < 峰1 DIF
+        5. 背离强度得分 = min(10, 价格涨幅% × DIF回落幅度%)
+           其中：价格涨幅% = (峰2价 - 峰1价) / 峰1价 × 100
+                 DIF回落幅度% = (峰1 DIF - 峰2 DIF) / |峰1 DIF| × 100
+        6. 无顶背离时返回 0
+        """
+        import datetime
+
+        # 查询足够长的历史数据：60天窗口 + 35天EMA预热 + 一些余量
+        end_dt = datetime.datetime.strptime(trade_date, '%Y-%m-%d')
+        start_dt = end_dt - datetime.timedelta(days=130)
+        start_str = start_dt.strftime('%Y-%m-%d')
+
+        klines = db_session.query(StockDailyKLine).filter(
+            StockDailyKLine.stock_code == index_code,
+            StockDailyKLine.trade_date >= start_str,
+            StockDailyKLine.trade_date <= trade_date,
+            StockDailyKLine.close_price.isnot(None),
+            StockDailyKLine.close_price > 0
+        ).order_by(StockDailyKLine.trade_date.asc()).all()
+
+        if len(klines) < 40:
+            logger.warning(f"⚠️ {index_code} 历史数据不足，无法计算 MACD 顶背离（当前 {len(klines)} 条）")
+            return 0.0
+
+        closes = [float(k.close_price) for k in klines]
+
+        # --- 计算 EMA ---
+        def ema(prices, period):
+            k = 2 / (period + 1)
+            result = [prices[0]]
+            for p in prices[1:]:
+                result.append(p * k + result[-1] * (1 - k))
+            return result
+
+        ema12 = ema(closes, 12)
+        ema26 = ema(closes, 26)
+        dif = [e12 - e26 for e12, e26 in zip(ema12, ema26)]
+        dea = ema(dif, 9)
+
+        # 只在近 60 交易日窗口内做波峰检测（EMA 已用全量数据预热）
+        window = min(60, len(closes))
+        w_closes = closes[-window:]
+        w_dif    = dif[-window:]
+
+        # --- 局部波峰检测（至少间隔 3 根 K 线，避免噪音） ---
+        MIN_GAP = 3
+        peaks = []  # (index_in_window, price, dif_value)
+        for i in range(1, len(w_closes) - 1):
+            if w_closes[i] > w_closes[i - 1] and w_closes[i] > w_closes[i + 1]:
+                # 检查与上一个波峰的最小间距
+                if peaks and (i - peaks[-1][0]) < MIN_GAP:
+                    # 保留价格更高的那个
+                    if w_closes[i] > peaks[-1][1]:
+                        peaks[-1] = (i, w_closes[i], w_dif[i])
+                else:
+                    peaks.append((i, w_closes[i], w_dif[i]))
+
+        if len(peaks) < 2:
+            logger.info(f"📊 {index_code} 近60日波峰不足2个，无顶背离")
+            return 0.0
+
+        # 取最近两个波峰
+        peak1_idx, peak1_price, peak1_dif = peaks[-2]
+        peak2_idx, peak2_price, peak2_dif = peaks[-1]
+
+        logger.info(
+            f"📊 MACD顶背离检测 [{index_code}]: "
+            f"峰1(idx={peak1_idx}, 价={peak1_price:.2f}, DIF={peak1_dif:.4f}) → "
+            f"峰2(idx={peak2_idx}, 价={peak2_price:.2f}, DIF={peak2_dif:.4f})"
+        )
+
+        # --- 判断顶背离 ---
+        if peak2_price <= peak1_price or peak2_dif >= peak1_dif:
+            logger.info(f"📊 {index_code} 无顶背离（价格未创新高 或 DIF 未背离）")
+            return 0.0
+
+        # --- 计算背离强度得分 ---
+        price_rise_pct = (peak2_price - peak1_price) / peak1_price * 100      # 价格涨幅%
+        dif_drop_pct   = (peak1_dif - peak2_dif) / abs(peak1_dif) * 100       # DIF 回落幅度%
+
+        # 两个维度相乘后缩放，再 clip 到 [0, 10]
+        # 除以 10 是经验缩放系数（1%×10% = 0.1 → 约1分；3%×40% = 1.2 → 约12分 clip 到10）
+        raw_score = (price_rise_pct * dif_drop_pct) / 10.0
+        score = round(min(10.0, max(0.0, raw_score)), 2)
+
+        logger.info(
+            f"📊 MACD顶背离得分 [{index_code}]: "
+            f"价格涨幅={price_rise_pct:.2f}%, DIF回落={dif_drop_pct:.2f}%, 得分={score}"
+        )
+        return score
+
     def _get_trend_scores_cached(self, trade_date: str, db_session) -> tuple:
         """缓存趋势得分，同一 trade_date 只计算一次（避免 ma5/ma10 两个因子重复触发 DB 查询）"""
         if not hasattr(self, '_trend_score_cache'):
