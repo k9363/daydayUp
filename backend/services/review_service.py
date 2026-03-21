@@ -2437,26 +2437,32 @@ class ReviewTaskService:
             
             # 构建大盘因子树 - 动态从数据库读取
             from models.factor import FactorDefine
-            
+            from models.expression import ScoreExpression
+            import re
+
+            builtins = {'IF', 'ABS', 'MAX', 'MIN', 'SUM', 'AVG', 'SQRT', 'LOG', 'ROUND', 'POW'}
+
+            # 获取大盘综合得分的 ScoreExpression（优先于 factor_define.expression）
+            market_score_expr = db.session.query(ScoreExpression).filter_by(
+                scope='market', is_default=True, is_active=True
+            ).first()
+
             # 获取所有大盘因子定义
             market_factor_defs = db.session.query(FactorDefine).filter(
                 FactorDefine.factor_scope == 'market',
                 FactorDefine.is_active == True
             ).order_by(FactorDefine.id).all()
-            
+            market_factor_code_set = {f.factor_code for f in market_factor_defs}
+
             # 构建动态因子树
             factors_tree = {}
             for f in market_factor_defs:
                 # 解析依赖：如果是表达式计算，提取表达式中的变量名
                 dependencies = []
                 if f.source == 'calculated' and f.expression:
-                    import re
-                    # 提取表达式中的因子代码（变量名）
                     var_names = re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', f.expression)
-                    # 过滤掉内置函数名
-                    builtins = {'IF', 'ABS', 'MAX', 'MIN', 'SUM', 'AVG', 'SQRT', 'LOG', 'ROUND', 'POW'}
-                    dependencies = [v for v in var_names if v not in builtins]
-                
+                    dependencies = [v for v in var_names if v not in builtins and v in market_factor_code_set]
+
                 factors_tree[f.factor_code] = {
                     'factor_name': f.factor_name,
                     'value': float(market_factors.get(f.factor_code, 0)) if market_factors.get(f.factor_code, 0) is not None else 0,
@@ -2465,6 +2471,26 @@ class ReviewTaskService:
                     'source': f.source,
                     'calculation_method': f.calculation_method
                 }
+
+            # 用 ScoreExpression 覆盖 market_score 的 expression 和 dependencies
+            # 确保前端展示的树与实际计算逻辑一致
+            if market_score_expr and market_score_expr.expression:
+                var_names = re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', market_score_expr.expression)
+                score_deps = [v for v in var_names if v not in builtins and v in market_factor_code_set]
+                if 'market_score' in factors_tree:
+                    factors_tree['market_score']['expression'] = market_score_expr.expression
+                    factors_tree['market_score']['dependencies'] = score_deps
+                    factors_tree['market_score']['value'] = float(market_factors.get('market_score', 0)) if market_factors.get('market_score') is not None else 0
+                else:
+                    # factor_define 中没有 market_score 时兜底创建
+                    factors_tree['market_score'] = {
+                        'factor_name': '大盘综合得分',
+                        'value': float(market_factors.get('market_score', 0)) if market_factors.get('market_score') is not None else 0,
+                        'expression': market_score_expr.expression,
+                        'dependencies': score_deps,
+                        'source': 'calculated',
+                        'calculation_method': 'expression'
+                    }
             
             market_tree = {
                 'type': 'market_overview',

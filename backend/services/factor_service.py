@@ -993,7 +993,19 @@ class FactorCalculator:
             )
             market_data[factor.factor_code] = result
             logger.info(f"✅ 计算派生因子 {factor.factor_code} = {result}, 表达式: {factor.expression}（延后计算）")
-        
+
+        # 优先使用 ScoreExpression（scope='market'）计算大盘综合得分
+        # 与股票总分逻辑对齐——用户在 UI 更新的表达式在此生效
+        market_score_expr = ScoreExpression.query.filter_by(
+            scope='market',
+            is_default=True,
+            is_active=True
+        ).first()
+        if market_score_expr and market_score_expr.expression:
+            result = self._evaluate_market_expression(market_score_expr.expression, market_data)
+            market_data['market_score'] = result
+            logger.info(f"✅ 大盘综合得分（ScoreExpression）= {result}, 表达式: {market_score_expr.expression}")
+
         logger.info(f"📊 最终大盘因子结果: {market_data}")
         return market_data
     
