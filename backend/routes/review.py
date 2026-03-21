@@ -5,6 +5,7 @@ import logging
 from flask import Blueprint, request, jsonify, current_app
 from services.review_service import get_review_task_service
 from extensions import db
+from models.stockbasic import StockBasic
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)

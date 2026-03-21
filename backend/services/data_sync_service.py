@@ -118,20 +118,46 @@ class DataSyncService:
         Returns:
             bool: 登录成功返回 True
         """
-        try:
-            # 尝试一次查询来检测会话是否有效
-            rs = bs.query_trade_dates(start_date='2020-01-01', end_date='2020-01-01')
-            if rs.error_code == '0':
-                return True  # 会话有效
-            
-            # 会话失效，需要重新登录
-            if self.lg:
-                self.lg = None
-            return self.login()
-        except Exception:
-            # 任何异常都尝试重新登录
+        import socket
+        import threading
+        
+        # 使用带超时的检测机制，避免会话失效后阻塞
+        result = {'success': False, 'needs_relogin': False}
+        
+        def check_session():
+            try:
+                # 使用较短的超时检测会话
+                original_timeout = socket.getdefaulttimeout()
+                socket.setdefaulttimeout(10)  # 10秒超时
+                try:
+                    rs = bs.query_trade_dates(start_date='2020-01-01', end_date='2020-01-01')
+                    if rs.error_code == '0':
+                        result['success'] = True  # 会话有效
+                    else:
+                        result['needs_relogin'] = True  # 需要重新登录
+                finally:
+                    socket.setdefaulttimeout(original_timeout)
+            except Exception:
+                result['needs_relogin'] = True  # 任何异常都需要重新登录
+        
+        # 在独立线程中运行检测，避免阻塞
+        check_thread = threading.Thread(target=check_session)
+        check_thread.daemon = True
+        check_thread.start()
+        check_thread.join(timeout=15)  # 最多等待15秒
+        
+        if check_thread.is_alive():
+            # 检测超时，强制重新登录
+            logger.warning("会话检测超时，强制重新登录")
+            result['needs_relogin'] = True
+        
+        if result['success']:
+            return True  # 会话有效
+        
+        # 需要重新登录
+        if self.lg:
             self.lg = None
-            return self.login()
+        return self.login()
 
     def get_stock_list(self, date=None, stock_type='all'):
         """

@@ -786,7 +786,7 @@ def get_all_sectors():
     """获取所有板块列表（用于下拉选择）"""
     try:
         page = request.args.get('page', 1, type=int)
-        page_size = request.args.get('page_size', 100, type=int)
+        page_size = request.args.get('page_size', 1000, type=int)  # 增大默认返回数量
         sector_type = request.args.get('type')
         
         # 构建查询
@@ -798,7 +798,9 @@ def get_all_sectors():
         # 获取总数
         total = query.count()
         
-        # 分页获取
+        # 分页获取（最大返回 5000 条）
+        if page_size > 5000:
+            page_size = 5000
         sectors = query.order_by(StockSector.sector_name).paginate(page=page, per_page=page_size, error_out=False)
         
         result = [{
@@ -836,12 +838,14 @@ def add_stock_to_sector():
             return jsonify({'code': 400, 'message': '股票代码和板块ID不能为空'}), 400
         
         # 检查是否已存在关联
+        logger.info(f"[add_stock_to_sector] 请求: stock_code={stock_code}, sector_id={sector_id}")
         existing = db.session.query(StockSectorRelation).filter(
             StockSectorRelation.stock_code == stock_code,
             StockSectorRelation.sector_id == sector_id
         ).first()
         
         if existing:
+            logger.info(f"[add_stock_to_sector] 股票 {stock_code} 已在板块 {sector_id} 中")
             return jsonify({'code': 400, 'message': '该股票已在当前板块中'}), 400
         
         # 添加关联
@@ -854,7 +858,7 @@ def add_stock_to_sector():
         
         # 更新板块成分股数量
         service = get_metadata_service()
-        service._update_sector_stock_count(sector_id)
+        service.update_sector_stock_count(sector_id)
         
         return jsonify({
             'code': 200,
@@ -892,7 +896,7 @@ def remove_stock_from_sector():
         
         # 更新板块成分股数量
         service = get_metadata_service()
-        service._update_sector_stock_count(sector_id)
+        service.update_sector_stock_count(sector_id)
         
         return jsonify({
             'code': 200,
@@ -902,6 +906,86 @@ def remove_stock_from_sector():
     except Exception as e:
         db.session.rollback()
         logger.exception("从板块移除股票失败")
+        return jsonify({'code': 500, 'message': str(e)}), 500
+
+
+@metadata_bp.route('/stock/<stock_code>/sectors', methods=['GET'])
+def get_stock_sectors(stock_code):
+    """获取单只股票所属的板块列表"""
+    try:
+        if not stock_code:
+            return jsonify({'code': 400, 'message': '股票代码不能为空'}), 400
+        
+        # 查询股票所属板块
+        relations = db.session.query(
+            StockSectorRelation,
+            StockSector
+        ).join(
+            StockSector, StockSector.id == StockSectorRelation.sector_id
+        ).filter(
+            StockSectorRelation.stock_code == stock_code
+        ).all()
+        
+        sectors = []
+        for rel, sector in relations:
+            sectors.append({
+                'id': sector.id,
+                'sector_code': sector.sector_code,
+                'sector_name': sector.sector_name,
+                'sector_type': sector.sector_type
+            })
+        
+        return jsonify({
+            'code': 200,
+            'message': '操作成功',
+            'data': sectors
+        })
+        
+    except Exception as e:
+        logger.exception("获取股票板块失败")
+        return jsonify({'code': 500, 'message': str(e)}), 500
+
+
+@metadata_bp.route('/stocks/sectors', methods=['POST'])
+def get_batch_stock_sectors():
+    """批量获取多只股票所属的板块"""
+    try:
+        data = request.get_json()
+        stock_codes = data.get('stock_codes', [])
+        
+        if not stock_codes:
+            return jsonify({'code': 400, 'message': '股票代码列表不能为空'}), 400
+        
+        # 查询所有股票的板块
+        relations = db.session.query(
+            StockSectorRelation.stock_code,
+            StockSector
+        ).join(
+            StockSector, StockSector.id == StockSectorRelation.sector_id
+        ).filter(
+            StockSectorRelation.stock_code.in_(stock_codes)
+        ).all()
+        
+        # 按股票代码分组
+        result = {}
+        for stock_code, sector in relations:
+            if stock_code not in result:
+                result[stock_code] = []
+            result[stock_code].append({
+                'id': sector.id,
+                'sector_code': sector.sector_code,
+                'sector_name': sector.sector_name,
+                'sector_type': sector.sector_type
+            })
+        
+        return jsonify({
+            'code': 200,
+            'message': '操作成功',
+            'data': result
+        })
+        
+    except Exception as e:
+        logger.exception("批量获取股票板块失败")
         return jsonify({'code': 500, 'message': str(e)}), 500
 
 

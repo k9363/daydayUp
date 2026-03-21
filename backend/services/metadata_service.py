@@ -577,6 +577,28 @@ class MetadataService:
         ).all()
         
         return [r.to_dict() for r in relations]
+
+    def update_sector_stock_count(self, sector_id, db_session=None):
+        """
+        更新板块的股票数量
+        
+        Args:
+            sector_id: 板块ID
+            db_session: 数据库会话
+        """
+        if db_session is None:
+            db_session = db.session
+        
+        # 统计该板块的股票数量
+        count = db_session.query(StockSectorRelation).filter(
+            StockSectorRelation.sector_id == sector_id
+        ).count()
+        
+        # 更新板块的 stock_count
+        sector = db_session.query(StockSector).filter(StockSector.id == sector_id).first()
+        if sector:
+            sector.stock_count = count
+            db_session.commit()
     
     # ==================== 综合补充接口 ====================
     

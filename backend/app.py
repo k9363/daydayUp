@@ -2,6 +2,8 @@
 import logging
 import sys
 import atexit
+import os
+import fcntl
 from flask import Flask
 from flask_cors import CORS
 from config import config
@@ -133,18 +135,92 @@ def create_app(config_name=None):
 
 # 全局调度器（应用启动时初始化）
 _scheduler_service = None
+_scheduler_initialized = False
+
+# 文件锁路径（用于多 worker 场景下确保只初始化一次 scheduler）
+_scheduler_lock_file = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 
+    '.scheduler_init.lock'
+)
+# 标记文件：初始化成功后创建，用于快速判断是否已初始化
+_scheduler_flag_file = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 
+    '.scheduler_initialized'
+)
 
 
-def init_scheduler(app):
+def init_scheduler(app, force=False):
     """初始化定时任务调度器"""
-    global _scheduler_service
+    global _scheduler_service, _scheduler_initialized
+
+    # 快速检查：先检查标记文件是否存在
+    if os.path.exists(_scheduler_flag_file) and not force:
+        # 检查标记文件中的进程是否还在运行
+        try:
+            with open(_scheduler_flag_file, 'r') as f:
+                saved_pid = int(f.read().strip())
+            # 检查进程是否存活
+            if saved_pid > 0:
+                try:
+                    os.kill(saved_pid, 0)  # 信号0检查进程是否存在
+                    # 进程存在，跳过初始化
+                    app.logger.info("⏭️ 定时任务调度器已跳过初始化（标记文件存在，进程存活）")
+                    _scheduler_initialized = True
+                    return
+                except OSError:
+                    # 进程不存在，需要重新初始化
+                    app.logger.info("⏭️ 标记文件中的进程已死亡，删除标记文件并重新初始化")
+                    try:
+                        os.remove(_scheduler_flag_file)
+                    except:
+                        pass
+        except:
+            pass
+
+    # 防止重复初始化（进程内检查）
+    if _scheduler_initialized and not force:
+        app.logger.info("⏭️ 定时任务调度器已跳过初始化（进程内已存在）")
+        return
+
+    # 使用文件锁确保只有一个 worker 初始化 scheduler
+    lock_fd = None
     try:
+        # 创建锁文件（如果不存在）
+        lock_dir = os.path.dirname(_scheduler_lock_file)
+        if not os.path.exists(lock_dir):
+            os.makedirs(lock_dir, exist_ok=True)
+
+        lock_fd = open(_scheduler_lock_file, 'w')
+        # 阻塞模式获取排他锁（确保其他 worker 等待）
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+
+        # 获取到锁后，检查标记文件（可能有其他 worker 刚初始化完）
+        if os.path.exists(_scheduler_flag_file) and not force:
+            app.logger.info("⏭️ 定时任务调度器已跳过初始化（已被其他 worker 初始化）")
+            _scheduler_initialized = True
+            return
+
+        # 执行初始化
         from services.scheduler_service import scheduler_service as ss
         _scheduler_service = ss
         _scheduler_service.start()
+        _scheduler_initialized = True
+
+        # 创建标记文件
+        with open(_scheduler_flag_file, 'w') as f:
+            f.write(str(os.getpid()))
+
         app.logger.info("✅ 定时任务调度器已初始化")
+
     except Exception as e:
         app.logger.warning(f"⚠️ 定时任务调度器初始化失败: {e}")
+    finally:
+        if lock_fd:
+            try:
+                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+                lock_fd.close()
+            except:
+                pass
 
 
 def stop_scheduler():
@@ -152,6 +228,12 @@ def stop_scheduler():
     global _scheduler_service
     if _scheduler_service:
         _scheduler_service.stop()
+    # 删除标记文件，确保下次启动时正常初始化
+    try:
+        if os.path.exists(_scheduler_flag_file):
+            os.remove(_scheduler_flag_file)
+    except Exception:
+        pass
 
 
 def get_scheduler_service():
