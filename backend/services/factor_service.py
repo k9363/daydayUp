@@ -1313,14 +1313,15 @@ class FactorCalculator:
         计算指数 MACD 日线顶背离得分（0~10）
 
         算法：
-        1. 取近 60 交易日收盘价（+额外 26+9=35 天 EMA 预热，共查 ~100 天）
+        1. 取近 60 交易日收盘价（+额外 70 天 EMA 预热，共查约 130 天）
         2. 计算 DIF = EMA12 - EMA26，DEA = EMA9(DIF)
-        3. 在近 60 交易日内用滑动窗口检测价格局部最高点（波峰）
-        4. 取最近两个波峰，判断顶背离：峰2价格 > 峰1价格 且 峰2 DIF < 峰1 DIF
-        5. 背离强度得分 = min(10, 价格涨幅% × DIF回落幅度%)
-           其中：价格涨幅% = (峰2价 - 峰1价) / 峰1价 × 100
-                 DIF回落幅度% = (峰1 DIF - 峰2 DIF) / |峰1 DIF| × 100
-        6. 无顶背离时返回 0
+        3. 在近 60 交易日内用滑动窗口检测价格局部最高点（波峰，最小间距 3 根 K 线）
+        4. 峰2 = 60日内价格最高的波峰；峰1 = 峰2之前 DIF 最高的波峰
+           （相比"最近两峰"，可捕捉跨越多周的大级别背离）
+        5. 背离条件：峰2价格 > 峰1价格 且 峰2 DIF < 峰1 DIF
+        6. 背离强度得分 = min(10, 价格涨幅% × DIF回落幅度% / 10 × 时效因子)
+           时效因子 = max(0, 1 - 峰2距今天数/30)，超过30日线性衰减至0
+        7. 无顶背离或信号已过期时返回 0
         """
         import datetime
 
@@ -1378,9 +1379,19 @@ class FactorCalculator:
             logger.info(f"📊 {index_code} 近60日波峰不足2个，无顶背离")
             return 0.0
 
-        # 取最近两个波峰
-        peak1_idx, peak1_price, peak1_dif = peaks[-2]
-        peak2_idx, peak2_price, peak2_dif = peaks[-1]
+        # --- 选取参考峰对 ---
+        # 峰2：60日内价格最高的波峰（多头真正的高点）
+        # 峰1：峰2之前 DIF 最高的波峰（动量最强的参考点）
+        # 相比"最近两峰"，此方案能捕捉跨越多周的大级别背离
+        peak2 = max(peaks, key=lambda p: p[1])  # 价格最高
+        earlier = [p for p in peaks if p[0] < peak2[0]]
+        if not earlier:
+            logger.info(f"📊 {index_code} 价格最高峰前无其他波峰，无法判断顶背离")
+            return 0.0
+        peak1 = max(earlier, key=lambda p: p[2])  # 前期 DIF 最高
+
+        peak1_idx, peak1_price, peak1_dif = peak1
+        peak2_idx, peak2_price, peak2_dif = peak2
 
         logger.info(
             f"📊 MACD顶背离检测 [{index_code}]: "
@@ -1397,14 +1408,17 @@ class FactorCalculator:
         price_rise_pct = (peak2_price - peak1_price) / peak1_price * 100      # 价格涨幅%
         dif_drop_pct   = (peak1_dif - peak2_dif) / abs(peak1_dif) * 100       # DIF 回落幅度%
 
-        # 两个维度相乘后缩放，再 clip 到 [0, 10]
-        # 除以 10 是经验缩放系数（1%×10% = 0.1 → 约1分；3%×40% = 1.2 → 约12分 clip 到10）
-        raw_score = (price_rise_pct * dif_drop_pct) / 10.0
+        # 时效折扣：价格高点距今越远，信号越陈旧，线性衰减至第30日归零
+        days_since_peak2 = len(w_closes) - 1 - peak2_idx
+        recency_factor = max(0.0, 1.0 - days_since_peak2 / 30.0)
+
+        raw_score = (price_rise_pct * dif_drop_pct) / 10.0 * recency_factor
         score = round(min(10.0, max(0.0, raw_score)), 2)
 
         logger.info(
             f"📊 MACD顶背离得分 [{index_code}]: "
-            f"价格涨幅={price_rise_pct:.2f}%, DIF回落={dif_drop_pct:.2f}%, 得分={score}"
+            f"价格涨幅={price_rise_pct:.2f}%, DIF回落={dif_drop_pct:.2f}%, "
+            f"时效因子={recency_factor:.2f}(距今{days_since_peak2}日), 得分={score}"
         )
         return score
 
