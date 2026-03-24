@@ -81,24 +81,45 @@ class SchedulerService:
             from models.reviewtask import ReviewTask
             from extensions import db
             from services.review_service import ReviewTaskService
-            
+            import baostock as bs
+
             # 获取今天日期
             today = datetime.now().strftime('%Y-%m-%d')
             logger.info(f"📅 检查 {today} 是否为交易日")
-            
-            # 使用baostock API检查是否是交易日
-            import baostock as bs
-            lg = bs.login()
-            if lg.error_code != '0':
-                logger.error(f"❌ Baostock登录失败: {lg.error_msg}")
-                return {"success": False, "message": f"Baostock登录失败"}
-            
-            # 查询指定日期是否为交易日
-            rs = bs.query_trade_dates(start_date=today, end_date=today)
-            data_list = []
-            while (rs.error_code == '0') & rs.next():
-                data_list.append(rs.get_row_data())
-            bs.logout()
+
+            # 复用应用全局 baostock 会话，不要重复 login
+            # app.py 已在启动时完成 bs.login()，同一进程内重复 login 会报"网络接收错误"
+            import time
+            max_retries = 3
+            rs = None
+            for attempt in range(1, max_retries + 1):
+                lg = bs.login()
+                if lg.error_code != '0':
+                    logger.warning(
+                        f"⚠️ Baostock 登录失败（{attempt}/{max_retries}）: {lg.error_msg}"
+                    )
+                    if attempt < max_retries:
+                        time.sleep(3)
+                        continue
+                    logger.error(f"❌ Baostock 多次登录失败")
+                    return {"success": False, "message": f"Baostock 登录失败: {lg.error_msg}"}
+                try:
+                    rs = bs.query_trade_dates(start_date=today, end_date=today)
+                    data_list = []
+                    while rs.next():
+                        data_list.append(rs.get_row_data())
+                    break  # 查询成功，跳出重试循环
+                except Exception as e:
+                    logger.warning(
+                        f"⚠️ 查询交易日失败（{attempt}/{max_retries}）: {e}"
+                    )
+                    if attempt < max_retries:
+                        time.sleep(3)
+                    else:
+                        logger.error(f"❌ 查询交易日多次失败")
+                        return {"success": False, "message": f"查询交易日失败: {e}"}
+            # ⚠️ 注意：不调用 bs.logout()，因为 baostock 是进程级单会话
+            # app.py 启动时已登录，scheduler 复用同一会话，logout 会导致复盘任务执行时断连
             
             is_trading_day = False
             if data_list and len(data_list) > 0:

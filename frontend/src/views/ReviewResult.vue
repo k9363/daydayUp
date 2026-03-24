@@ -26,47 +26,14 @@
     <!-- 数据内容 -->
     <div v-else-if="chartData" class="content">
       <!-- 周期信息 -->
-      <el-card shadow="hover" class="cycle-info-card" v-if="cycleInfo">
-        <div class="cycle-info">
-          <div class="cycle-title">{{ cycleInfo.cycle?.title }}</div>
-          <div class="cycle-period">
-            <el-tag :type="getPeriodTypeTag(cycleInfo.sub_period?.period_type)">
-              {{ getPeriodTypeName(cycleInfo.sub_period?.period_type) }}
-            </el-tag>
-            <span class="cycle-date">{{ cycleInfo.trade_date }}</span>
-          </div>
-          <div class="cycle-features" v-if="cycleInfo.cycle?.features">
-            {{ cycleInfo.cycle?.features }}
-          </div>
-        </div>
-      </el-card>
+      <CycleInfoCard v-if="cycleInfo" :cycle-info="cycleInfo" />
 
       <!-- 每日笔记区域 -->
-      <el-card shadow="hover" class="note-card">
-        <template #header>
-          <div class="card-header">
-            <span>每日笔记</span>
-            <el-button type="primary" link @click="saveNote" :loading="noteSaving">
-              <el-icon><DocumentChecked /></el-icon>
-              保存笔记
-            </el-button>
-          </div>
-        </template>
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <div class="note-section">
-              <div class="note-label">大盘分析</div>
-              <div ref="marketAnalysisEditor" class="rich-editor"></div>
-            </div>
-          </el-col>
-          <el-col :span="12">
-            <div class="note-section">
-              <div class="note-label">明日操作</div>
-              <div ref="nextActionEditor" class="rich-editor"></div>
-            </div>
-          </el-col>
-        </el-row>
-      </el-card>
+      <NoteEditor
+        v-if="currentTradeDate"
+        :trade-date="currentTradeDate"
+        @save="handleSaveNote"
+      />
       <!-- 大盘指数 + 主要指数行情 一行展示 -->
       <el-row :gutter="12" class="market-row" v-if="indexData.length > 0 || Object.keys(marketData).length > 0">
         <!-- 大盘指数 -->
@@ -81,10 +48,10 @@
               </div>
             </template>
             
-            <!-- 综合得分 -->
+            <!-- 综合得分（后端 factors.market_score，非中文键） -->
             <div class="market-score">
-              <div class="score-value" :class="Number(marketData['大盘综合得分']) >= 0 ? 'positive' : 'negative'">
-                {{ marketData['大盘综合得分'] ? Number(marketData['大盘综合得分']).toFixed(3) : '0.000' }}
+              <div class="score-value" :class="marketCompositeScore >= 0 ? 'positive' : 'negative'">
+                {{ Number(marketCompositeScore).toFixed(3) }}
               </div>
               <div class="score-label">综合得分</div>
             </div>
@@ -95,13 +62,14 @@
               <el-row :gutter="8">
                 <el-col
                   v-for="factor in marketKeyFactors"
-                  :key="factor.name"
+                  :key="factor.code"
                   :span="12"
                   class="key-factor-col"
                 >
                   <div class="key-factor-item">
                     <div class="key-factor-value" :class="factor.value >= 0 ? 'positive' : 'negative'">
-                      {{ factor.value >= 0 ? '+' : '' }}{{ Number(factor.value).toFixed(2) }}
+                      {{ factor.value >= 0 ? '+' : '' }}{{ Number(factor.value).toFixed(2)
+                      }}{{ factor.unit ? factor.unit : '' }}
                     </div>
                     <div class="key-factor-name">{{ factor.name }}</div>
                   </div>
@@ -132,9 +100,9 @@
                   </span>
                 </template>
               </el-table-column>
-              <el-table-column label="成交额(亿)" min-width="100" align="right">
+              <el-table-column label="成交额(亿元)" min-width="100" align="right">
                 <template #default="{ row }">
-                  {{ formatAmount(row.amount || row.turnover || 0) }}
+                  {{ formatIndexTurnoverYi(row.amount || row.turnover || 0) }}
                 </template>
               </el-table-column>
             </el-table>
@@ -284,7 +252,7 @@
           <!-- 综合得分展示 -->
           <div class="total-score">
             <span class="score-label">大盘综合得分</span>
-            <span class="score-value">{{ marketData['大盘综合得分'] || 0 }}</span>
+            <span class="score-value">{{ Number(marketCompositeScore).toFixed(4) }}</span>
           </div>
           
           <!-- 树形结构 -->
@@ -313,7 +281,8 @@
                   
                   <!-- 节点值 -->
                   <span v-if="data.value !== undefined" class="node-value" :class="data.value >= 0 ? 'positive' : 'negative'">
-                    {{ typeof data.value === 'number' ? (data.value >= 0 ? '+' : '') + data.value.toFixed(2) : data.value }}
+                    {{ typeof data.value === 'number' ? (data.value >= 0 ? '+' : '') + data.value.toFixed(2) : data.value
+                    }}{{ data.valueUnit || '' }}
                   </span>
                   
                   <!-- 公式 -->
@@ -537,10 +506,15 @@ import { useRoute, useRouter } from 'vue-router'
 import { Refresh, Grid, Monitor, Connection, Trophy, DocumentChecked, Edit, Delete, Check, Close } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
-import { getSectorStocks, getAllSectors, getStockSectors, getBatchStockSectors, addStockToSector, removeStockFromSector, getTags, addTag, updateTag, deleteTag, addStockTag, removeStockTag, getBatchStockTags, getDailyNote, saveDailyNote, getCycleByDate } from '@/api'
-import 'quill/dist/quill.snow.css'
+import { getSectorStocks, getAllSectors, getStockSectors, getBatchStockSectors, addStockToSector, removeStockFromSector, getTags, addTag, updateTag, deleteTag, addStockTag, removeStockTag, getBatchStockTags, saveDailyNote, getCycleByDate } from '@/api'
+import { useReviewData } from '@/composables/useReviewData'
 
-let Quill = null
+// 组件
+import CycleInfoCard from './components/review/CycleInfoCard.vue'
+import NoteEditor from './components/review/NoteEditor.vue'
+import MarketOverview from './components/review/MarketOverview.vue'
+import Top10FactorStocks from './components/review/Top10FactorStocks.vue'
+import SectorAnalysis from './components/review/SectorAnalysis.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -557,12 +531,7 @@ const currentStock = ref(null)
 // 大盘指数详情弹窗
 const showMarketDetailDialog = ref(false)
 
-// 富文本编辑器相关
-const marketAnalysisEditor = ref(null)
-const nextActionEditor = ref(null)
-let marketAnalysisQuill = null
-let nextActionQuill = null
-const noteSaving = ref(false)
+// 富文本编辑器相关（NoteEditor 组件自行管理）
 const currentTradeDate = ref('')
 
 // 周期信息
@@ -574,8 +543,22 @@ const sectorDialogLoading = ref(false)
 const currentSectorStock = ref(null)
 const allSectors = ref([])
 const selectedSectorId = ref(null)
-const stockSectorsMap = ref({})  // { stock_code: [sector1, sector2, ...] }
+const stockSectorsMap = ref({})
 const sectorSearchText = ref('')
+
+// 使用 composable 处理复盘数据
+const {
+  indexData,
+  top100Stocks,
+  top10FactorStocks,
+  sectorScores,
+  factorTree,
+  marketAnalysis,
+  marketData,
+  marketCompositeScore,
+  marketKeyFactors,
+  tradeDate
+} = useReviewData(chartData)
 
 // 过滤后的板块列表
 const filteredSectors = computed(() => {
@@ -583,7 +566,7 @@ const filteredSectors = computed(() => {
     return allSectors.value
   }
   const search = sectorSearchText.value.toLowerCase()
-  return allSectors.value.filter(s => 
+  return allSectors.value.filter(s =>
     s.sector_name.toLowerCase().includes(search) ||
     (s.sector_code && s.sector_code.toLowerCase().includes(search))
   )
@@ -647,11 +630,6 @@ const editTagForm = ref({ name: '', color: '#409EFF' })
 const summary = computed(() => chartData.value?.summary || {})
 const sectors = computed(() => chartData.value?.sectors || [])
 const top100Detail = computed(() => chartData.value?.top100Detail || [])
-const top10FactorStocks = computed(() => chartData.value?.top10FactorStocks || [])
-const indexData = computed(() => chartData.value?.indexData || [])
-
-// 大盘/市场数据
-const marketData = computed(() => chartData.value?.market || {})
 
 // 大盘指数详情（树状结构）
 const marketDetail = computed(() => chartData.value?.marketDetail || null)
@@ -664,6 +642,17 @@ const marketIndexTableData = computed(() => {
     ...info
   }))
 })
+
+const MARKET_ONE_YI = 100000000
+
+/** 树节点/卡片：成交额类展示为亿元（与 useReviewData 规则一致） */
+const isMarketTurnoverTreeNode = (code, factorName) => {
+  const c = String(code)
+  if (/turnover|amount/i.test(c)) return true
+  if (/成交额/.test(c)) return true
+  if (factorName && /成交额/.test(String(factorName))) return true
+  return false
+}
 
 // 大盘因子树数据 - 完全动态生成，根据后端返回的 dependencies 构建树形结构
 const marketFactorTreeData = computed(() => {
@@ -686,11 +675,20 @@ const marketFactorTreeData = computed(() => {
     if (visited.has(factorCode)) return null
     visited.add(factorCode)
     
+    const fname = factor.factor_name || ''
+    const scaleYi = isMarketTurnoverTreeNode(factorCode, fname)
+    const n = Number(factor.value)
+    let displayVal = factor.value
+    if (scaleYi && factor.value != null && factor.value !== '' && !Number.isNaN(n)) {
+      displayVal = n / MARKET_ONE_YI
+    }
+
     const node = {
       id: parentId ? `${parentId}-${factorCode}` : factorCode,
-      name: factor.factor_name || factorCode,
+      name: fname || factorCode,
       code: factorCode,
-      value: factor.value,
+      value: displayVal,
+      valueUnit: scaleYi ? '亿元' : '',
       expression: factor.expression || '',
       level,
       levelClass: `level-${level}`,
@@ -719,24 +717,8 @@ const marketFactorTreeData = computed(() => {
   return result
 })
 
-// 大盘直接子因子（填充留白）
-const marketKeyFactors = computed(() => {
-  if (!marketDetail.value?.factors) return []
-  const factors = marketDetail.value.factors
-  const root = factors['market_score']
-  if (!root) return []
-  return (root.dependencies || []).map(code => {
-    const f = factors[code]
-    if (!f) return null
-    return { name: f.factor_name || code, value: f.value }
-  }).filter(Boolean)
-})
-
 // 动态因子配置
 const factorConfig = computed(() => chartData.value?.factorConfig || { columns: [], expression: '', expressionName: '' })
-
-// 因子树数据
-const factorTree = computed(() => chartData.value?.factorTree || null)
 
 // 树形组件属性
 const treeProps = {
@@ -995,6 +977,14 @@ const handleShowSectorStocks = async (row) => {
 const formatAmount = (value) => {
   if (!value && value !== 0) return '-'
   return `${parseFloat(value).toFixed(2)}亿`
+}
+
+/** 指数行情：turnover 多为原始元，除一亿后展示 */
+const formatIndexTurnoverYi = (value) => {
+  if (value === null || value === undefined || value === '') return '-'
+  const n = Number(value)
+  if (Number.isNaN(n)) return '-'
+  return `${(n / 100000000).toFixed(2)}`
 }
 
 // 格式化市值（直接是元，转为亿/万亿显示）
@@ -1294,114 +1284,25 @@ const getTagTextColor = (color) => {
 }
 
 // 初始化富文本编辑器
-const initRichEditors = async () => {
-  // 动态导入 Quill
-  if (!Quill) {
-    const quillModule = await import('quill')
-    Quill = quillModule.default
-  }
-  
-  // 等待 DOM 元素出现，最多等待 5 秒
-  let retries = 10
-  while (retries > 0) {
-    if (marketAnalysisEditor.value && nextActionEditor.value) {
-      break
-    }
-    await new Promise(resolve => setTimeout(resolve, 500))
-    retries--
-  }
-  
-  // 如果 DOM 元素还不存在，强制再等一下
-  if (!marketAnalysisEditor.value || !nextActionEditor.value) {
-    await new Promise(resolve => setTimeout(resolve, 1000))
-  }
-  
-  // 创建大盘分析编辑器
-  if (marketAnalysisEditor.value && !marketAnalysisQuill) {
-    marketAnalysisQuill = new Quill(marketAnalysisEditor.value, {
-      theme: 'snow',
-      placeholder: '输入大盘分析内容...',
-      modules: {
-        toolbar: [
-          ['bold', 'italic', 'underline', 'strike'],
-          [{ 'list': 'ordered' }, { 'list': 'bullet' }],
-          [{ 'header': [1, 2, 3, false] }],
-          ['clean']
-        ]
-      }
-    })
-  }
-  
-  // 创建明日操作编辑器
-  if (nextActionEditor.value && !nextActionQuill) {
-    nextActionQuill = new Quill(nextActionEditor.value, {
-      theme: 'snow',
-      placeholder: '输入明日操作计划...',
-      modules: {
-        toolbar: [
-          ['bold', 'italic', 'underline', 'strike'],
-          [{ 'list': 'ordered' }, { 'list': 'bullet' }],
-          [{ 'header': [1, 2, 3, false] }],
-          ['clean']
-        ]
-      }
-    })
-  }
-  
-  return {
-    marketAnalysisQuill,
-    nextActionQuill
-  }
-}
+// （已移除，NoteEditor 组件自行管理 Quill 实例）
 
 // 加载每日笔记
-const loadDailyNote = async (tradeDate) => {
-  // 如果 Quill 还没初始化，等待一下
-  if (!marketAnalysisQuill || !nextActionQuill) {
-    await new Promise(resolve => setTimeout(resolve, 1000))
-  }
-  
-  // 再次检查
-  if (!marketAnalysisQuill || !nextActionQuill) {
-    await initRichEditors()
-  }
-  
-  try {
-    const res = await getDailyNote(tradeDate)
-    
-    if (res.code === 200 && res.data) {
-      const note = res.data
-      
-      if (marketAnalysisQuill && note.market_analysis !== undefined) {
-        marketAnalysisQuill.root.innerHTML = note.market_analysis || ''
-      }
-      if (nextActionQuill && note.next_action !== undefined) {
-        nextActionQuill.root.innerHTML = note.next_action || ''
-      }
-    }
-  } catch (error) {
-    console.error('加载每日笔记失败:', error)
-  }
-}
+// （已移除，NoteEditor 组件自行管理笔记加载）
 
 // 保存每日笔记
-const saveNote = async () => {
+const handleSaveNote = async ({ marketAnalysis, nextAction }) => {
   if (!currentTradeDate.value) {
     ElMessage.warning('无法获取交易日期')
     return
   }
-  
-  noteSaving.value = true
+
   try {
-    const marketAnalysis = marketAnalysisQuill ? marketAnalysisQuill.root.innerHTML : ''
-    const nextAction = nextActionQuill ? nextActionQuill.root.innerHTML : ''
-    
     const res = await saveDailyNote({
       tradeDate: currentTradeDate.value,
       marketAnalysis,
       nextAction
     })
-    
+
     if (res.code === 200) {
       ElMessage.success('笔记保存成功')
     } else {
@@ -1410,8 +1311,6 @@ const saveNote = async () => {
   } catch (error) {
     console.error('保存笔记失败:', error)
     ElMessage.error('保存失败')
-  } finally {
-    noteSaving.value = false
   }
 }
 
@@ -1441,17 +1340,6 @@ const fetchChartData = async () => {
       
       // 数据加载完成，设置 loading 为 false
       loading.value = false
-      
-      // 强制等待 DOM 渲染
-      await new Promise(resolve => setTimeout(resolve, 500))
-      
-      // 初始化富文本编辑器
-      await initRichEditors()
-      
-      // 加载笔记
-      if (currentTradeDate.value) {
-        await loadDailyNote(currentTradeDate.value)
-      }
       
       // 加载股票标签
       const stockCodes = (chartData.value?.top10FactorStocks || []).map(s => s.code)

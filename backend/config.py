@@ -3,8 +3,123 @@
 """
 import os
 from dotenv import load_dotenv
+from typing import Dict
 
 load_dotenv()
+
+
+# ========== 常量配置 ==========
+
+# 市场指数代码映射
+MARKET_INDEX_CODES: Dict[str, str] = {
+    'sh.000001': '上证指数',
+    'sz.399001': '深证成指',
+    'sz.399006': '创业板指',
+    'sh.000300': '沪深300',
+    'sh.000905': '中证500',
+    'sh.000852': '中证1000',
+}
+
+MARKET_INDEX_CODE_LIST = list(MARKET_INDEX_CODES.keys())
+
+FACTOR_NAME_MAP: Dict[str, str] = {
+    'close_price': '收盘价',
+    'volume': '成交量',
+    'turnover': '成交额',
+    'pct_change': '涨跌幅',
+    'ma5': '5日均线',
+    'ma10': '10日均线',
+    'ma20': '20日均线',
+    'ma20_y1': '昨日20日均线',
+    'volume_y1': '昨日成交量',
+    'turnover_y1': '昨日成交额',
+    'amount_rank': '成交额排名',
+    'avg_amount_3d': '近3日平均成交额',
+    'avg_amount_5d': '近5日平均成交额',
+    'avg_amount_10d': '近10日平均成交额',
+    'avg_amount_20d': '近20日平均成交额',
+    'avg_amount_4_20d': '4-20日平均成交额',
+    'avg_amount_11_30d': '11-30日平均成交额',
+    'avg_amount_4_120d': '4-120日平均成交额',
+    'price_ma5_diff': '股价与5日线差值',
+    'price_ma10_diff': '股价与10日线差值',
+    'factor1_rank': '成交额权重',
+    'factor2_ma': '短线趋势',
+    'factor3_vol': '昨日同比',
+    'factor4_burst': '爆量',
+    'factor5_extreme': '极限量',
+    'factor6_trend': '多头趋势',
+    'deviation_10d': '10日偏离值累计',
+    'deviation_30d': '30日偏离值累计',
+    'remaining_deviation': '剩余偏离值',
+}
+
+CALCULATION_METHOD_MAP: Dict[str, str] = {
+    'close_price': 'kline_field',
+    'volume': 'kline_field',
+    'turnover': 'kline_field',
+    'pct_change': 'kline_field',
+    'ma5': 'kline_field',
+    'ma10': 'kline_field',
+    'ma20': 'kline_field',
+    'volume_y1': 'kline_field',
+    'turnover_y1': 'kline_field',
+    'amount_rank': 'rank',
+    'turnover_rank': 'rank',
+    'avg_amount_3d': 'avg',
+    'avg_amount_5d': 'avg',
+    'avg_amount_10d': 'avg',
+    'avg_amount_20d': 'avg',
+    'avg_amount_4_20d': 'avg',
+    'avg_amount_11_30d': 'avg',
+    'avg_amount_4_120d': 'avg',
+    'price_ma5_diff': 'expression',
+    'price_ma10_diff': 'expression',
+}
+
+FACTOR_DEPENDENCIES: Dict[str, list] = {
+    'avg_amount_3d': ['turnover'],
+    'avg_amount_5d': ['turnover'],
+    'avg_amount_10d': ['turnover'],
+    'avg_amount_20d': ['turnover'],
+    'avg_amount_4_20d': ['turnover'],
+    'avg_amount_11_30d': ['turnover'],
+    'avg_amount_4_120d': ['turnover'],
+    'amount_rank': ['turnover'],
+    'turnover_rank': ['turnover'],
+    'volume_y1': ['volume'],
+    'turnover_y1': ['turnover'],
+    'price_ma5_diff': ['close_price', 'ma5'],
+    'price_ma10_diff': ['close_price', 'ma10'],
+    'factor1_rank': ['turnover_rank'],
+    'factor2_ma': ['close_price', 'ma5', 'ma10', 'ma20', 'ma20_y1'],
+    'factor3_vol': ['volume', 'volume_y1'],
+    'factor4_burst': ['avg_amount_3d', 'avg_amount_4_20d'],
+    'factor5_extreme': ['avg_amount_10d', 'avg_amount_11_30d'],
+    'factor6_trend': ['close_price', 'ma5', 'ma10'],
+    'deviation_10d': ['close_price', 'ma20'],
+    'deviation_30d': ['close_price', 'ma20'],
+    'remaining_deviation': ['close_price', 'ma20'],
+}
+
+EXPR_BUILTINS = {'IF', 'ABS', 'MAX', 'MIN', 'SUM', 'AVG', 'SQRT', 'LOG', 'ROUND', 'POW'}
+EXPR_FUNCTION_NAMES = EXPR_BUILTINS | {'abs', 'sqrt', 'max', 'min', 'avg', 'sum', 'round', 'pow', 'if', 'log', 'AND', 'OR', 'NOT'}
+
+STOCK_TYPE_STOCK = 'stock'
+STOCK_TYPE_ETF = 'etf'
+STOCK_TYPE_INDEX = 'index'
+STOCK_TYPE_BOND = 'bond'
+
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
+DEFAULT_TOP_N = 100
+TOP_N_FOR_SECTOR = 30
+TOP_N_FOR_DISPLAY = 10
+
+FACTOR_CATEGORY_KLINE_FIELD = 'kline_field'
+FACTOR_CATEGORY_RANK = 'rank'
+FACTOR_CATEGORY_AVG = 'avg'
+FACTOR_CATEGORY_EXPRESSION = 'expression'
 
 
 class Config:

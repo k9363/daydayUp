@@ -17,6 +17,7 @@ from routes.tag import tag_bp
 from routes.factor import factor_bp
 from routes.expression import expression_bp
 from routes.cycle import cycle_bp
+from utils.error_handlers import register_error_handlers
 
 # 配置根日志（gunicorn 会覆盖，但为 fallback 保留）
 _root_handler = logging.StreamHandler(sys.stderr)
@@ -43,14 +44,23 @@ _baostock_lg = None
 
 
 def _init_baostock_login():
-    """应用启动时初始化 Baostock 登录"""
+    """应用启动时初始化 Baostock 登录（带重试）"""
     global _baostock_lg
     import baostock as bs
-    _baostock_lg = bs.login()
-    if _baostock_lg.error_code != '0':
-        logging.warning(f"⚠️ Baostock 初始登录失败: {_baostock_lg.error_msg}")
-    else:
-        logging.info("✅ Baostock 已登录（应用全局会话）")
+    import time
+
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        _baostock_lg = bs.login()
+        if _baostock_lg.error_code == '0':
+            logging.info("✅ Baostock 已登录（应用全局会话）")
+            return
+        logging.warning(
+            f"⚠️ Baostock 初始登录失败（{attempt}/{max_retries}）: {_baostock_lg.error_msg}"
+        )
+        if attempt < max_retries:
+            time.sleep(3)
+    logging.error("❌ Baostock 多次登录失败，定时任务可能无法正常运行")
 
 
 def _cleanup_baostock():
@@ -116,20 +126,10 @@ def create_app(config_name=None):
     @app.route('/api/health')
     def health():
         return {'status': 'ok', 'message': 'DaydayUp API is running'}
-    
-    # 错误处理
-    @app.errorhandler(400)
-    def bad_request(error):
-        return {'code': 400, 'message': str(error)}, 400
-    
-    @app.errorhandler(404)
-    def not_found(error):
-        return {'code': 404, 'message': 'Resource not found'}, 404
-    
-    @app.errorhandler(500)
-    def internal_error(error):
-        return {'code': 500, 'message': 'Internal server error'}, 500
-    
+
+    # 注册统一错误处理器
+    register_error_handlers(app)
+
     return app
 
 

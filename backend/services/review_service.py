@@ -11,7 +11,14 @@ from models.reviewtask import ReviewTask
 from models.reviewresult import ReviewResult
 from services.baostock_service import get_baostock_service
 from services.factor_service import factor_calculator
+from services.review_result_builder import ReviewResultBuilder
 from utils.excel_utils import read_excel
+from config import (
+    MARKET_INDEX_CODES, STOCK_TYPE_STOCK,
+    EXPR_BUILTINS, EXPR_FUNCTION_NAMES,
+    CALCULATION_METHOD_MAP, FACTOR_DEPENDENCIES,
+    FACTOR_NAME_MAP
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,70 +40,10 @@ def _build_factor_tree(factor_definitions):
         'avg': {'name': '历史平均因子', 'level': 1, 'children': []},
         'expression': {'name': '计算得分因子', 'level': 2, 'children': []},
     }
-    
-    # 定义因子的计算方法分类
-    calculation_method_map = {
-        # K线原始字段
-        'close_price': 'kline_field',
-        'volume': 'kline_field',
-        'turnover': 'kline_field',
-        'pct_change': 'kline_field',
-        'ma5': 'kline_field',
-        'ma10': 'kline_field',
-        'ma20': 'kline_field',
-        'volume_y1': 'kline_field',
-        'turnover_y1': 'kline_field',
 
-        # 排名因子
-        'amount_rank': 'rank',
-        'turnover_rank': 'rank',
-
-        # 历史平均因子
-        'avg_amount_3d': 'avg',
-        'avg_amount_5d': 'avg',
-        'avg_amount_10d': 'avg',
-        'avg_amount_20d': 'avg',
-        'avg_amount_4_20d': 'avg',
-        'avg_amount_11_30d': 'avg',
-        'avg_amount_4_120d': 'avg',
-
-        # 中间表达式因子
-        'price_ma5_diff': 'expression',
-        'price_ma10_diff': 'expression',
-
-        # 偏离值因子：代码中直接计算（见 factor_service.py），无 expression 字段
-    }
-    
-    # 定义因子依赖关系（无表达式时的默认值，有表达式时从表达式解析）
-    factor_dependencies = {
-        'avg_amount_3d': ['turnover'],
-        'avg_amount_5d': ['turnover'],
-        'avg_amount_10d': ['turnover'],
-        'avg_amount_20d': ['turnover'],
-        'avg_amount_4_20d': ['turnover'],
-        'avg_amount_11_30d': ['turnover'],
-        'avg_amount_4_120d': ['turnover'],
-        'amount_rank': ['turnover'],
-        'turnover_rank': ['turnover'],
-        'volume_y1': ['volume'],
-        'turnover_y1': ['turnover'],
-        'price_ma5_diff': ['close_price', 'ma5'],
-        'price_ma10_diff': ['close_price', 'ma10'],
-        'factor1_rank': ['turnover_rank'],
-        'factor2_ma': ['close_price', 'ma5', 'ma10', 'ma20', 'ma20_y1'],
-        'factor3_vol': ['volume', 'volume_y1'],
-        'factor4_burst': ['avg_amount_3d', 'avg_amount_4_20d'],
-        'factor5_extreme': ['avg_amount_10d', 'avg_amount_11_30d'],
-        'factor6_trend': ['close_price', 'ma5', 'ma10'],
-
-        # 偏离值因子
-        'deviation_10d': ['close_price', 'ma20'],
-        'deviation_30d': ['close_price', 'ma20'],
-        'remaining_deviation': ['close_price', 'ma20'],
-    }
-    
-    # 从表达式中解析出的变量名（因子代码）视为依赖，排除内置函数
-    EXPR_BUILTINS = {'IF', 'ABS', 'MAX', 'MIN', 'SUM', 'AVG', 'SQRT', 'LOG', 'ROUND', 'POW'}
+    # 从常量配置读取
+    calculation_method_map = CALCULATION_METHOD_MAP
+    factor_dependencies = FACTOR_DEPENDENCIES
     
     def parse_dependencies_from_expression(expr):
         if not expr or not expr.strip():
@@ -1974,29 +1921,51 @@ class ReviewTaskService:
 
     def _save_review_results(self, task, all_df, top_df, factors_df, sector_scores, trade_date):
         """
-        保存复盘分析结果
-
-        Args:
-            task: 复盘任务
-            all_df: 全部股票数据
-            top_df: 成交额前N股票数据
-            factors_df: 因子得分数据（包含100只股票）
-            sector_scores: 板块得分
-            trade_date: 交易日期
+        保存复盘分析结果（使用 ReviewResultBuilder 拆分的独立方法）
         """
-        import pandas as pd
+        # 使用 ReviewResultBuilder 构建各种结果
+        builder = ReviewResultBuilder(db.session)
 
-        results = []
+        # 1. 构建指数行情结果
+        results = builder.build_index_results(task, all_df)
 
-        # 1. 指数数据 - 获取主要指数的行情数据
-        INDEX_CODES = [
-            'sh.000001',  # 上证指数
-            'sz.399006',  # 创业板指
-            'sz.399001',  # 深证成指
-            'sh.000300',  # 沪深300
-            'sh.000905',  # 中证500
-            'sh.000852',  # 中证1000
-        ]
+        # 2. 构建成交额排名结果
+        results.extend(builder.build_top_stocks_result(task, top_df))
+
+        # 3. 构建因子分析结果
+        results.extend(builder.build_factor_analysis_result(task, factors_df, top_df))
+
+        # 4. 构建板块得分结果
+        results.extend(builder.build_sector_score_result(task, factors_df, sector_scores))
+
+        # 5. 构建因子树形结构结果
+        results.extend(builder.build_factor_tree_result(task))
+
+        # 6. 构建大盘指数计算结果
+        results.extend(builder.build_market_analysis_result(task, trade_date))
+
+        # 批量保存所有结果
+        if results:
+            from models.reviewresult import ReviewResult
+            mappings = []
+            for r in results:
+                mappings.append({
+                    'task_id': r.task_id,
+                    'dimension': r.dimension,
+                    'metric_name': r.metric_name,
+                    'metric_value': r.metric_value,
+                    'compare_value': r.compare_value,
+                    'change_rate': r.change_rate,
+                    'status': r.status,
+                    'suggestion': r.suggestion,
+                    'detail_data': r.detail_data
+                })
+            db.session.bulk_insert_mappings(ReviewResult, mappings)
+
+        db.session.commit()
+        logger.info(f"✅ 保存了 {len(results)} 条分析结果")
+
+        return results
         
         # 从 all_df 中获取指数数据
         if all_df is not None and not all_df.empty:
@@ -2535,7 +2504,6 @@ class ReviewTaskService:
         logger.info(f"✅ 保存了 {len(results)} 条分析结果")
 
         return results
-
 
 def get_review_task_service():
     """获取复盘任务服务实例"""

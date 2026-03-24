@@ -2,10 +2,10 @@
 复盘任务API路由
 """
 import logging
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, current_app
 from services.review_service import get_review_task_service
 from extensions import db
-from models.stockbasic import StockBasic
+from utils.api_response import ApiResponse, validate_required
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -19,43 +19,38 @@ def create_task():
     """创建复盘任务"""
     try:
         data = request.get_json()
-        
+
         if not data:
-            return jsonify({'code': 400, 'message': '请求数据不能为空'}), 400
-        
+            return ApiResponse.bad_request('请求数据不能为空')
+
+        # 验证必填字段
+        error = validate_required(data, 'taskName', 'tradeDate')
+        if error:
+            return ApiResponse.bad_request(error)
+
         task_name = data.get('taskName')
-        trade_date = data.get('tradeDate')  # 直接使用交易日期
+        trade_date = data.get('tradeDate')
         review_type = data.get('reviewType', 'custom')
         dimensions = data.get('dimensions', [])
         rules = data.get('rules', [])
-        overwrite = data.get('overwrite', False)  # 是否覆盖
-        
-        # 数据源信息
+        overwrite = data.get('overwrite', False)
+
         data_source_type = data.get('dataSourceType', 'baostock')
         data_source_name = data.get('dataSourceName', f'复盘数据 {trade_date}')
         data_source_desc = data.get('dataSourceDesc', '')
-        
-        if not task_name:
-            return jsonify({'code': 400, 'message': '请输入任务名称'}), 400
-        
+
         # 检查该交易日是否已存在任务
         from models.reviewtask import ReviewTask
         existing_task = ReviewTask.query.filter(
             ReviewTask.trade_date == trade_date,
             ReviewTask.data_source_type == data_source_type
         ).first()
-        
+
         if existing_task and not overwrite:
-            return jsonify({
-                'code': 409,
-                'message': f'该交易日 {trade_date} 已存在复盘任务',
-                'data': {
-                    'existingTaskId': existing_task.id,
-                    'existingTaskName': existing_task.task_name,
-                    'tradeDate': trade_date
-                }
-            }), 409
-        
+            return ApiResponse.conflict(
+                f'该交易日 {trade_date} 已存在复盘任务',
+            )
+
         # 如果存在且需要覆盖，删除旧任务
         if existing_task and overwrite:
             # 先保存旧任务的笔记（基于交易日期）
@@ -63,13 +58,13 @@ def create_task():
             old_note = DailyNote.query.filter_by(trade_date=trade_date).first()
             saved_market_analysis = old_note.market_analysis if old_note else None
             saved_next_action = old_note.next_action if old_note else None
-            
+
             # 删除旧任务及其结果
             from models.reviewresult import ReviewResult
             ReviewResult.query.filter(ReviewResult.task_id == existing_task.id).delete()
             db.session.delete(existing_task)
             db.session.commit()
-            
+
             # 恢复笔记
             if saved_market_analysis is not None or saved_next_action is not None:
                 note = DailyNote.query.filter_by(trade_date=trade_date).first()
@@ -86,7 +81,7 @@ def create_task():
                     )
                     db.session.add(note)
                 db.session.commit()
-        
+
         service = get_review_task_service()
         task = service.create_task(
             task_name=task_name,
@@ -98,15 +93,29 @@ def create_task():
             data_source_name=data_source_name,
             data_source_desc=data_source_desc
         )
-        
-        return jsonify({
-            'code': 200,
-            'message': '创建成功',
-            'data': task.to_dict()
-        })
-        
+
+        return ApiResponse.success(task.to_dict(), '创建成功')
+
     except Exception as e:
-        return jsonify({'code': 500, 'message': str(e)}), 500
+        logger.exception(f"创建复盘任务失败: {e}")
+        return ApiResponse.server_error(str(e))
+
+
+@review_bp.route('/task/<int:task_id>', methods=['GET'])
+def get_task_detail(task_id):
+    """获取任务详情"""
+    try:
+        service = get_review_task_service()
+        task = service.get_task(task_id)
+
+        if not task:
+            return ApiResponse.not_found('任务不存在')
+
+        return ApiResponse.success(task.to_dict())
+
+    except Exception as e:
+        logger.exception(f"获取任务详情失败: {e}")
+        return ApiResponse.server_error(str(e))
 
 
 @review_bp.route('/task/<int:task_id>/execute', methods=['POST'])
@@ -115,15 +124,15 @@ def execute_task(task_id):
     try:
         service = get_review_task_service()
         task = service.execute_task(task_id)
-        
-        return jsonify({
-            'code': 200,
-            'message': '执行成功',
-            'data': task.to_dict()
-        })
-        
+
+        if not task:
+            return ApiResponse.not_found('任务不存在')
+
+        return ApiResponse.success(task.to_dict(), '执行成功')
+
     except Exception as e:
-        return jsonify({'code': 500, 'message': str(e)}), 500
+        logger.exception(f"执行复盘任务失败: {e}")
+        return ApiResponse.server_error(str(e))
 
 
 @review_bp.route('/task/list', methods=['GET'])
@@ -135,26 +144,22 @@ def task_list():
         page = request.args.get('page', 1, type=int)
         page_size = request.args.get('pageSize', 20, type=int)
 
-        # 限制每页数量，防止过大
         page_size = min(page_size, 100)
 
         service = get_review_task_service()
         result = service.get_task_list(include_completed, trade_date, page, page_size)
 
-        return jsonify({
-            'code': 200,
-            'message': '操作成功',
-            'data': {
-                'items': [t.to_dict_with_summary() for t in result['items']],
-                'total': result['total'],
-                'page': result['page'],
-                'page_size': result['page_size'],
-                'total_pages': result['total_pages']
-            }
+        return ApiResponse.success({
+            'items': [t.to_dict_with_summary() for t in result['items']],
+            'total': result['total'],
+            'page': result['page'],
+            'page_size': result['page_size'],
+            'total_pages': result['total_pages']
         })
 
     except Exception as e:
-        return jsonify({'code': 500, 'message': str(e)}), 500
+        logger.exception(f"获取任务列表失败: {e}")
+        return ApiResponse.server_error(str(e))
 
 
 @review_bp.route('/task/<int:task_id>', methods=['GET'])
@@ -163,18 +168,15 @@ def task_detail(task_id):
     try:
         service = get_review_task_service()
         task = service.get_task(task_id)
-        
+
         if not task:
-            return jsonify({'code': 404, 'message': '任务不存在'}), 404
-        
-        return jsonify({
-            'code': 200,
-            'message': '操作成功',
-            'data': task.to_dict()
-        })
-        
+            return ApiResponse.not_found('任务不存在')
+
+        return ApiResponse.success(task.to_dict())
+
     except Exception as e:
-        return jsonify({'code': 500, 'message': str(e)}), 500
+        logger.exception(f"获取任务详情失败: {e}")
+        return ApiResponse.server_error(str(e))
 
 
 @review_bp.route('/task/<int:task_id>/results', methods=['GET'])
@@ -183,15 +185,12 @@ def task_results(task_id):
     try:
         service = get_review_task_service()
         results = service.get_task_results(task_id)
-        
-        return jsonify({
-            'code': 200,
-            'message': '操作成功',
-            'data': [r.to_dict() for r in results]
-        })
-        
+
+        return ApiResponse.success([r.to_dict() for r in results])
+
     except Exception as e:
-        return jsonify({'code': 500, 'message': str(e)}), 500
+        logger.exception(f"获取任务结果失败: {e}")
+        return ApiResponse.server_error(str(e))
 
 
 @review_bp.route('/task/<int:task_id>/report', methods=['GET'])
@@ -200,15 +199,12 @@ def task_report(task_id):
     try:
         service = get_review_task_service()
         report = service.get_report(task_id)
-        
-        return jsonify({
-            'code': 200,
-            'message': '操作成功',
-            'data': report
-        })
-        
+
+        return ApiResponse.success(report)
+
     except Exception as e:
-        return jsonify({'code': 500, 'message': str(e)}), 500
+        logger.exception(f"获取分析报告失败: {e}")
+        return ApiResponse.server_error(str(e))
 
 
 @review_bp.route('/task/<int:task_id>', methods=['DELETE'])
@@ -217,18 +213,15 @@ def delete_task(task_id):
     try:
         service = get_review_task_service()
         success = service.delete_task(task_id)
-        
+
         if not success:
-            return jsonify({'code': 404, 'message': '任务不存在'}), 404
-        
-        return jsonify({
-            'code': 200,
-            'message': '删除成功',
-            'data': True
-        })
-        
+            return ApiResponse.not_found('任务不存在')
+
+        return ApiResponse.success(True, '删除成功')
+
     except Exception as e:
-        return jsonify({'code': 500, 'message': str(e)}), 500
+        logger.exception(f"删除任务失败: {e}")
+        return ApiResponse.server_error(str(e))
 
 
 @review_bp.route('/task/baostock', methods=['POST'])
@@ -236,56 +229,43 @@ def create_baostock_task():
     """创建Baostock复盘任务 - 获取指定日期全A股市场股票信息"""
     try:
         data = request.get_json()
-        
+
         if not data:
-            return jsonify({'code': 400, 'message': '请求数据不能为空'}), 400
-        
+            return ApiResponse.bad_request('请求数据不能为空')
+
         from datetime import datetime
         task_name = data.get('task_name', f"A股市场复盘 {datetime.now().strftime('%Y-%m-%d')}")
-        trade_date = data.get('trade_date')  # 交易日期，YYYY-MM-DD格式
+        trade_date = data.get('trade_date')
         review_type = data.get('review_type', 'daily')
         dimensions = data.get('dimensions', [])
         rules = data.get('rules', [])
-        stock_filter = data.get('stock_filter', None)  # 股票筛选条件，如 {"type": "top_by_amount", "value": 100}
-        overwrite = data.get('overwrite', False)  # 是否覆盖
-        
-        # 验证日期
+        stock_filter = data.get('stock_filter', None)
+        overwrite = data.get('overwrite', False)
+
         if not trade_date:
-            return jsonify({'code': 400, 'message': '请指定交易日期(trade_date)'}), 400
-        
-        # 检查该交易日是否已存在任务
+            return ApiResponse.bad_request('请指定交易日期(trade_date)')
+
         from models.reviewtask import ReviewTask
         existing_task = ReviewTask.query.filter(
             ReviewTask.trade_date == trade_date,
             ReviewTask.data_source_type == 'baostock'
         ).first()
-        
+
         if existing_task and not overwrite:
-            return jsonify({
-                'code': 409,
-                'message': f'该交易日 {trade_date} 已存在复盘任务',
-                'data': {
-                    'existingTaskId': existing_task.id,
-                    'existingTaskName': existing_task.task_name,
-                    'tradeDate': trade_date
-                }
-            }), 409
-        
+            return ApiResponse.conflict(f'该交易日 {trade_date} 已存在复盘任务')
+
         # 如果存在且需要覆盖，删除旧任务
         if existing_task and overwrite:
-            # 先保存旧任务的笔记（基于交易日期）
             from models.dailynote import DailyNote
             old_note = DailyNote.query.filter_by(trade_date=trade_date).first()
             saved_market_analysis = old_note.market_analysis if old_note else None
             saved_next_action = old_note.next_action if old_note else None
-            
-            # 删除旧任务及其结果
+
             from models.reviewresult import ReviewResult
             ReviewResult.query.filter(ReviewResult.task_id == existing_task.id).delete()
             db.session.delete(existing_task)
             db.session.commit()
-            
-            # 恢复笔记
+
             if saved_market_analysis is not None or saved_next_action is not None:
                 note = DailyNote.query.filter_by(trade_date=trade_date).first()
                 if note:
@@ -301,10 +281,9 @@ def create_baostock_task():
                     )
                     db.session.add(note)
                 db.session.commit()
-        
+
         service = get_review_task_service()
-        
-        # 直接在任务中设置数据源信息（不再单独创建DataSource）
+
         task = service.create_task(
             task_name=task_name,
             trade_date=trade_date,
@@ -316,18 +295,15 @@ def create_baostock_task():
             data_source_name=f"Baostock A股数据 {trade_date}",
             data_source_desc=f"获取{trade_date}日全A股市场股票列表"
         )
-        
-        # 先保存任务信息用于返回响应
+
         task_response = task.to_dict_with_summary()
         task_id = task.id
-        
-        # 异步执行任务，避免 gunicorn worker 超时
-        def run_baostock_task():
+
+        def run_baostock_task(task_id, app_instance):
             from extensions import db
             from services.review_service import ReviewTaskService
-            
-            # 创建新的 app context，SQLAlchemy 会自动为新线程创建 session
-            with app.app_context():
+
+            with app_instance.app_context():
                 service = ReviewTaskService()
                 try:
                     service.execute_baostock_task(task_id)
@@ -336,23 +312,17 @@ def create_baostock_task():
                     import traceback
                     logger.error(traceback.format_exc())
 
-        # 启动后台线程执行任务
         from threading import Thread
         app = current_app._get_current_object()
-        thread = Thread(target=run_baostock_task, daemon=True)
+        thread = Thread(target=run_baostock_task, args=(task_id, app))
+        thread.daemon = True
         thread.start()
-        
-        return jsonify({
-            'code': 200,
-            'message': '任务已创建并开始异步执行',
-            'data': task_response
-        })
-        
+
+        return ApiResponse.success(task_response, '任务已创建，正在后台执行')
+
     except Exception as e:
-        import traceback
-        logger.error(f"创建Baostock复盘任务失败: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({'code': 500, 'message': str(e)}), 500
+        logger.exception(f"创建Baostock任务失败: {e}")
+        return ApiResponse.server_error(str(e))
 
 
 @review_bp.route('/task/baostock/batch', methods=['POST'])
@@ -364,7 +334,7 @@ def create_baostock_batch_tasks():
 
         data = request.get_json()
         if not data:
-            return jsonify({'code': 400, 'message': '请求数据不能为空'}), 400
+            return ApiResponse.bad_request('请求数据不能为空')
 
         start_date = data.get('start_date')
         end_date   = data.get('end_date')
@@ -372,17 +342,17 @@ def create_baostock_batch_tasks():
         overwrite  = data.get('overwrite', False)
 
         if not start_date or not end_date:
-            return jsonify({'code': 400, 'message': '请指定 start_date 和 end_date'}), 400
+            return ApiResponse.bad_request('请指定 start_date 和 end_date')
 
         # 生成范围内所有工作日
         try:
             d_start = datetime.strptime(start_date, '%Y-%m-%d').date()
             d_end   = datetime.strptime(end_date,   '%Y-%m-%d').date()
         except ValueError:
-            return jsonify({'code': 400, 'message': '日期格式错误，请使用 YYYY-MM-DD'}), 400
+            return ApiResponse.bad_request('日期格式错误，请使用 YYYY-MM-DD')
 
         if d_start > d_end:
-            return jsonify({'code': 400, 'message': '开始日期不能晚于结束日期'}), 400
+            return ApiResponse.bad_request('开始日期不能晚于结束日期')
 
         # 调用 baostock 查询范围内实际交易日
         import baostock as bs
@@ -405,7 +375,7 @@ def create_baostock_batch_tasks():
                 cur += timedelta(days=1)
 
         if not trade_dates:
-            return jsonify({'code': 400, 'message': '所选范围内无交易日'}), 400
+            return ApiResponse.bad_request('所选范围内无交易日')
 
         service = get_review_task_service()
         created_tasks = []
@@ -482,21 +452,17 @@ def create_baostock_batch_tasks():
             app = current_app._get_current_object()
             Thread(target=run_batch, args=(created_tasks, app), daemon=True).start()
 
-        return jsonify({
-            'code': 200,
-            'message': f'成功创建 {len(created_tasks)} 个任务，跳过 {len(skipped_dates)} 个已存在日期',
-            'data': {
+        return ApiResponse.success({
                 'created': len(created_tasks),
                 'skipped': skipped_dates,
                 'task_ids': created_tasks
-            }
-        })
+            }, f'成功创建 {len(created_tasks)} 个任务，跳过 {len(skipped_dates)} 个已存在日期')
 
     except Exception as e:
         import traceback
         logger.error(f"批量创建复盘任务失败: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({'code': 500, 'message': str(e)}), 500
+        return ApiResponse.server_error(str(e))
 
 
 @review_bp.route('/task/<int:task_id>/chart', methods=['GET'])
@@ -513,7 +479,7 @@ def task_chart_data(task_id):
         ).all()
         
         if not all_results:
-            return jsonify({'code': 404, 'message': '图表数据不存在'}), 404
+            return ApiResponse.not_found('图表数据不存在')
         
         # 整合数据为图表格式
         chart_data = {
@@ -759,17 +725,13 @@ def task_chart_data(task_id):
                 'expressionName': ''
             }
         
-        return jsonify({
-            'code': 200,
-            'message': '操作成功',
-            'data': chart_data
-        })
+        return ApiResponse.success(chart_data)
         
     except Exception as e:
         import traceback
         logger.error(f"获取图表数据失败: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({'code': 500, 'message': str(e)}), 500
+        return ApiResponse.server_error(str(e))
 
 
 @review_bp.route('/dashboard', methods=['GET'])
@@ -894,17 +856,13 @@ def get_dashboard_data():
             
             dashboard_data.append(task_info)
         
-        return jsonify({
-            'code': 200,
-            'message': '操作成功',
-            'data': dashboard_data
-        })
+        return ApiResponse.success(dashboard_data)
         
     except Exception as e:
         import traceback
         logger.error(f"获取仪表盘数据失败: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({'code': 500, 'message': str(e)}), 500
+        return ApiResponse.server_error(str(e))
 
 
 # ==================== 每日笔记 API ====================
@@ -918,23 +876,15 @@ def get_daily_note(trade_date):
         note = DailyNote.query.filter_by(trade_date=trade_date).first()
         
         if not note:
-            return jsonify({
-                'code': 200,
-                'message': '操作成功',
-                'data': None
-            })
+            return ApiResponse.success(None)
         
-        return jsonify({
-            'code': 200,
-            'message': '操作成功',
-            'data': note.to_dict()
-        })
+        return ApiResponse.success(note.to_dict())
         
     except Exception as e:
         import traceback
         logger.error(f"获取每日笔记失败: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({'code': 500, 'message': str(e)}), 500
+        return ApiResponse.server_error(str(e))
 
 
 @review_bp.route('/note', methods=['POST'])
@@ -946,14 +896,14 @@ def save_daily_note():
         data = request.get_json()
         
         if not data:
-            return jsonify({'code': 400, 'message': '请求数据不能为空'}), 400
+            return ApiResponse.bad_request('请求数据不能为空')
         
         trade_date = data.get('tradeDate') or data.get('trade_date')
         market_analysis = data.get('marketAnalysis') or data.get('market_analysis')
         next_action = data.get('nextAction') or data.get('next_action')
         
         if not trade_date:
-            return jsonify({'code': 400, 'message': '请指定交易日期'}), 400
+            return ApiResponse.bad_request('请指定交易日期')
         
         # 查询是否已存在
         note = DailyNote.query.filter_by(trade_date=trade_date).first()
@@ -975,17 +925,13 @@ def save_daily_note():
         
         db.session.commit()
         
-        return jsonify({
-            'code': 200,
-            'message': '保存成功',
-            'data': note.to_dict()
-        })
+        return ApiResponse.success(note.to_dict(), '保存成功')
         
     except Exception as e:
         import traceback
         logger.error(f"保存每日笔记失败: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({'code': 500, 'message': str(e)}), 500
+        return ApiResponse.server_error(str(e))
 
 
 @review_bp.route('/note/latest', methods=['GET'])
@@ -997,20 +943,12 @@ def get_latest_note():
         note = DailyNote.query.order_by(DailyNote.trade_date.desc()).first()
         
         if not note:
-            return jsonify({
-                'code': 200,
-                'message': '操作成功',
-                'data': None
-            })
+            return ApiResponse.success(None)
         
-        return jsonify({
-            'code': 200,
-            'message': '操作成功',
-            'data': note.to_dict()
-        })
+        return ApiResponse.success(note.to_dict())
         
     except Exception as e:
         import traceback
         logger.error(f"获取最新笔记失败: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({'code': 500, 'message': str(e)}), 500
+        return ApiResponse.server_error(str(e))
