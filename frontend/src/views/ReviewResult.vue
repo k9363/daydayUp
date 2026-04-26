@@ -648,6 +648,8 @@ const MARKET_ONE_YI = 100000000
 /** 树节点/卡片：成交额类展示为亿元（与 useReviewData 规则一致） */
 const isMarketTurnoverTreeNode = (code, factorName) => {
   const c = String(code)
+  // 排除已知非金额因子
+  if (c === 'top20_avg_price' || c === 'turnover_growth') return false
   if (/turnover|amount/i.test(c)) return true
   if (/成交额/.test(c)) return true
   if (factorName && /成交额/.test(String(factorName))) return true

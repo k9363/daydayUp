@@ -110,9 +110,12 @@ export function useReviewData(chartData) {
 
   const ONE_YI = 100000000
 
-  /** 大盘成交额类因子：后端 value 为元，展示需除一亿（code 可能为英文或中文） */
+  /** 大盘成交额类因子：后端 value 为元，展示需除一亿（code 可能为英文或中文）
+   *  注意：top20_avg_price 是百分比（%），turnover_growth 是增速（倍数），都包含 turnover 但不是金额，需排除 */
   const isMarketTurnoverLike = (code, factorName) => {
     const c = String(code)
+    // 排除已知非金额因子：top20_avg_price(百分比)、turnover_growth(增速)
+    if (c === 'top20_avg_price' || c === 'turnover_growth') return false
     if (/turnover|amount/i.test(c)) return true
     if (/成交额/.test(c)) return true
     if (factorName && /成交额/.test(String(factorName))) return true
