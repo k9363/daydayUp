@@ -1134,17 +1134,43 @@ def parse_excel(file):
             raise ImportError(f"Excel解析失败: {str(e)}，CSV解析也失败: {str(csv_error)}")
 
 
-def has_letters(text):
-    """检查文本是否包含字母（排除ETF等常见基金后缀）"""
-    if not text:
-        return False
-    # 排除常见基金后缀
-    exclude_suffixes = ['ETF', 'LOF', 'FOF', 'QDII', 'ETF联接', 'etf', 'lof', 'fof', 'qdii']
-    text_upper = str(text).upper()
-    for suffix in exclude_suffixes:
-        if text_upper.endswith(suffix):
-            return False
-    return bool(re.search(r'[a-zA-Z]', str(text)))
+def _detect_col_offset(header, data_row):
+    """根据表头和数据行内容自动检测列偏移
+
+    兼容两种格式：
+    1. 完整格式：成交日期/成交时间都存在（如 table1.xls）
+    2. 缺失格式：前两列（成交日期/成交时间）缺失，直接从证券代码开始（如 table.xls）
+    """
+    import re
+    date_pat = re.compile(r'^\d{8}$')
+    time_pat = re.compile(r'^\d{2}:\d{2}:\d{2}$')
+    code_pat = re.compile(r'^\d{6}$')
+
+    # 如果前两列都符合日期时间格式，偏移为0
+    if (len(data_row) >= 2
+            and date_pat.match(str(data_row[0]).strip())
+            and time_pat.match(str(data_row[1]).strip())):
+        return 0
+
+    # 前两列为空，偏移为2
+    if (len(data_row) >= 2
+            and str(data_row[0]).strip() == ''
+            and str(data_row[1]).strip() == ''):
+        return 2
+
+    # 通过证券代码特征定位偏移
+    code_idx_in_header = None
+    for i, h in enumerate(header):
+        if '证券代码' in str(h):
+            code_idx_in_header = i
+            break
+
+    if code_idx_in_header is not None:
+        for i, val in enumerate(data_row):
+            if code_pat.match(str(val).strip()):
+                return i - code_idx_in_header
+
+    return 0
 
 
 def parse_number(value):
@@ -1200,103 +1226,96 @@ def import_delivery():
             return jsonify({'code': 400, 'message': '文件内容为空或格式不正确'}), 400
         
         imported_count = 0
-        skipped_letters = 0
-        skipped_apply_allotment = 0
+        skipped_no_deal_no = 0
+        skipped_gc_or_r = 0
         skipped_duplicate = 0
         error_count = 0
-        
-        # Skip header
+
+        # 固定列偏移为0，按 table1.xls 格式解析
+        # 列对应：0=成交日期,1=成交时间,2=证券代码,3=证券名称,4=操作,
+        #         5=成交数量,6=成交编号,7=成交均价,8=成交金额,...
         for row in rows[1:]:
-            if not row or len(row) < 21:
+            if not row or len(row) < 7:
                 continue
-            
+
             try:
-                # 提取字段
-                trade_date = row[0].strip()
-                trade_time = row[1].strip()
+                trade_date    = row[0].strip()
+                trade_time    = row[1].strip()
                 security_code = row[2].strip()
                 security_name = row[3].strip()
-                operation = row[4].strip()
-                
-                # 过滤条件1: 证券名称包含字母
-                if has_letters(security_name):
-                    skipped_letters += 1
+                operation     = row[4].strip()
+                deal_no       = row[6].strip()
+
+                # 过滤：成交编号为空
+                if not deal_no:
+                    skipped_no_deal_no += 1
                     continue
-                
-                # 过滤条件2: 证券名称以R开头（如R-001、Ｒ-001等）
-                if security_name and (security_name.startswith('R') or security_name.startswith('r') or security_name.startswith('Ｒ')):
-                    skipped_letters += 1
+
+                # 过滤：证券名称以 GC 或 R 开头（国债逆回购、融资融券等）
+                if security_name.startswith('GC') or security_name.startswith('R'):
+                    skipped_gc_or_r += 1
                     continue
-                
-                # 过滤条件3: 操作是"申请配号"、"申购配号"或"指定交易"
-                if operation in ['申请配号', '申购配号', '指定交易']:
-                    skipped_apply_allotment += 1
-                    continue
-                
-                deal_no = row[6].strip() if len(row) > 6 else None
-                
-                # 过滤条件4: 成交编号为空时不导入（避免唯一键冲突）
-                if not deal_no or deal_no == '':
+
+                # 检查是否已存在
+                if StockDelivery.query.filter_by(deal_no=deal_no).first():
                     skipped_duplicate += 1
                     continue
-                
-                # 检查是否已存在
-                if deal_no:
-                    existing = StockDelivery.query.filter_by(deal_no=deal_no).first()
-                    if existing:
-                        skipped_duplicate += 1
-                        continue
-                
-                # 创建记录
+
+                def safe_num(v): return float(v) if v and v.strip() else None
+                def safe_int(v): return int(float(v)) if v and v.strip() else None
+
+                # 至少需要前7列：成交日期、成交时间、证券代码、证券名称、操作、成交数量、成交编号
+                if len(row) < 7:
+                    error_count += 1
+                    continue
+
                 delivery = StockDelivery(
-                    trade_date=trade_date,
-                    trade_time=trade_time if trade_time else None,
-                    security_code=security_code,
-                    security_name=security_name if security_name else None,
-                    operation=operation if operation else None,
-                    quantity=parse_int(row[5]),
-                    deal_no=deal_no,
-                    price=parse_number(row[7]),
-                    amount=parse_number(row[8]),
-                    balance=parse_number(row[9]),
-                    stock_balance=parse_int(row[10]),
-                    occur_amount=parse_number(row[11]),
-                    commission=parse_number(row[12]),
-                    stamp_duty=parse_number(row[13]),
-                    other_fee=parse_number(row[14]),
-                    fund_balance=parse_number(row[15]),
-                    current_amount=parse_number(row[16]),
-                    contract_no=row[17].strip() if len(row) > 17 else None,
-                    other_expense=parse_number(row[18]) if len(row) > 18 else None,
-                    transfer_fee=parse_number(row[19]) if len(row) > 19 else None,
-                    market=row[20].strip() if len(row) > 20 else None,
+                    trade_date    = row[0].strip(),
+                    trade_time    = row[1].strip() or None,
+                    security_code = row[2].strip(),
+                    security_name = security_name,
+                    operation     = operation,
+                    quantity      = safe_int(row[5])  if len(row) > 5  else None,
+                    deal_no       = deal_no,
+                    price         = safe_num(row[7])  if len(row) > 7  else None,
+                    amount        = safe_num(row[8])  if len(row) > 8  else None,
+                    balance       = safe_num(row[9])  if len(row) > 9  else None,
+                    stock_balance = safe_int(row[10]) if len(row) > 10 else None,
+                    occur_amount  = safe_num(row[11]) if len(row) > 11 else None,
+                    commission    = safe_num(row[12]) if len(row) > 12 else None,
+                    stamp_duty    = safe_num(row[13]) if len(row) > 13 else None,
+                    other_fee     = safe_num(row[14]) if len(row) > 14 else None,
+                    fund_balance  = safe_num(row[15]) if len(row) > 15 else None,
+                    current_amount= safe_num(row[16]) if len(row) > 16 else None,
+                    contract_no   = row[17].strip() if len(row) > 17 else None,
+                    other_expense = safe_num(row[18]) if len(row) > 18 else None,
+                    transfer_fee  = safe_num(row[19]) if len(row) > 19 else None,
+                    market        = row[20].strip() if len(row) > 20 else None,
                 )
-                
+
                 db.session.add(delivery)
                 imported_count += 1
-                
-                # 批量提交
+
                 if imported_count % 100 == 0:
                     db.session.commit()
-                    
+
             except Exception as e:
                 error_count += 1
-                logger.error(f"导入错误: {e}, row: {row[:3]}")
+                logger.error(f"导入错误: {e}, row[:3]: {row[:3]}")
                 continue
-        
-        # 最后提交
+
         db.session.commit()
-        
+
         return jsonify({
             'code': 200,
             'message': '导入完成',
             'data': {
                 'imported': imported_count,
-                'skipped_letters': skipped_letters,
-                'skipped_apply_allotment': skipped_apply_allotment,
+                'skipped_no_deal_no': skipped_no_deal_no,
+                'skipped_gc_or_r': skipped_gc_or_r,
                 'skipped_duplicate': skipped_duplicate,
                 'error': error_count,
-                'total': imported_count + skipped_letters + skipped_apply_allotment + skipped_duplicate + error_count
+                'total': imported_count + skipped_no_deal_no + skipped_gc_or_r + skipped_duplicate + error_count
             }
         })
         

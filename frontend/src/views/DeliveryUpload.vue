@@ -50,11 +50,11 @@
         <template #default>
           <div v-if="importResult.code === 200 && importResult.data">
             <div>成功导入: {{ importResult.data.imported }} 条</div>
-            <div v-if="importResult.data.skipped_letters > 0" class="skip-info">
-              跳过（含字母）: {{ importResult.data.skipped_letters }} 条
+            <div v-if="importResult.data.skipped_gc_or_r > 0" class="skip-info">
+              跳过（GC/R开头）: {{ importResult.data.skipped_gc_or_r }} 条
             </div>
-            <div v-if="importResult.data.skipped_apply_allotment > 0" class="skip-info">
-              跳过（申请配号）: {{ importResult.data.skipped_apply_allotment }} 条
+            <div v-if="importResult.data.skipped_no_deal_no > 0" class="skip-info">
+              跳过（成交编号为空）: {{ importResult.data.skipped_no_deal_no }} 条
             </div>
             <div v-if="importResult.data.skipped_duplicate > 0" class="skip-info">
               跳过（重复）: {{ importResult.data.skipped_duplicate }} 条
