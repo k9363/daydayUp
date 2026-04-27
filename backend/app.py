@@ -17,6 +17,7 @@ from routes.tag import tag_bp
 from routes.factor import factor_bp
 from routes.expression import expression_bp
 from routes.cycle import cycle_bp
+from routes.note import note_bp
 from utils.error_handlers import register_error_handlers
 
 # 配置根日志（gunicorn 会覆盖，但为 fallback 保留）
@@ -115,6 +116,7 @@ def create_app(config_name=None):
     app.register_blueprint(factor_bp, url_prefix='/api/factor')
     app.register_blueprint(expression_bp, url_prefix='/api/expression')
     app.register_blueprint(cycle_bp, url_prefix='/api/cycle')
+    app.register_blueprint(note_bp, url_prefix='/api/note')
 
     # 启动时登录 Baostock
     _init_baostock_login()

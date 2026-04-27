@@ -212,17 +212,21 @@
                 {{ row.commission?.toFixed(2) || '-' }}
               </template>
             </el-table-column>
-            <el-table-column label="复盘记录" min-width="200">
+            <el-table-column label="复盘记录" min-width="180">
               <template #default="{ row }">
-                <el-input
-                  v-model="row.review_note"
-                  type="textarea"
-                  :rows="2"
-                  placeholder="输入复盘记录..."
-                  size="small"
-                  @blur="saveReviewNote(row)"
-                  class="review-input"
-                />
+                <div class="review-cell">
+                  <span
+                    class="review-preview"
+                    :title="row.review_note || '点击添加复盘记录'"
+                  >{{ row.review_note || '点击添加' }}</span>
+                  <el-button
+                    size="small"
+                    link
+                    type="primary"
+                    @click="openNoteDialog(row)"
+                    class="review-btn"
+                  >{{ row.review_note ? '编辑' : '添加' }}</el-button>
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -238,6 +242,38 @@
             />
           </div>
         </el-card>
+
+        <!-- 复盘记录编辑弹窗 -->
+        <el-dialog
+          v-model="noteDialogVisible"
+          :title="`复盘记录 - ${currentNoteRow?.trade_date || ''} ${currentNoteRow?.security_name || ''}`"
+          width="580px"
+          destroy-on-close
+        >
+          <div class="note-dialog-tip">
+            <span>操作：</span>
+            <el-tag :type="getOperationType(currentNoteRow?.operation)" size="small">
+              {{ currentNoteRow?.operation }}
+            </el-tag>
+            <span style="margin-left: 12px">数量：{{ currentNoteRow?.quantity }} 股</span>
+            <span style="margin-left: 12px">价格：¥{{ currentNoteRow?.price?.toFixed(3) }}</span>
+          </div>
+          <el-input
+            v-model="noteDialogContent"
+            type="textarea"
+            :rows="7"
+            placeholder="记录这笔操作的复盘心得..."
+            resize="vertical"
+            class="note-textarea"
+            @input="noteDialogDirty = true"
+          />
+          <template #footer>
+            <span class="dialog-tip" v-if="noteDialogDirty">有未保存的修改</span>
+            <div style="flex: 1" />
+            <el-button @click="noteDialogVisible = false">取消</el-button>
+            <el-button type="primary" :loading="noteSaving" @click="saveNoteDialog">保存</el-button>
+          </template>
+        </el-dialog>
         
         <!-- 未选择股票时的提示 -->
         <el-empty 
@@ -273,6 +309,13 @@ const deliveryTotal = ref(0)
 const currentPage = ref(1)
 const pageSize = ref(50)
 const operationFilter = ref('')
+
+// 复盘记录弹窗相关
+const noteDialogVisible = ref(false)
+const currentNoteRow = ref(null)
+const noteDialogContent = ref('')
+const noteDialogDirty = ref(false)
+const noteSaving = ref(false)
 
 // 汇总信息
 const stockSummary = ref({})
@@ -437,6 +480,35 @@ const saveReviewNote = async (row) => {
     await updateDeliveryReviewNote(row.id, row.review_note || '')
   } catch (error) {
     console.error('保存复盘记录失败:', error)
+  }
+}
+
+// 打开复盘记录弹窗
+const openNoteDialog = (row) => {
+  currentNoteRow.value = row
+  noteDialogContent.value = row.review_note || ''
+  noteDialogDirty.value = false
+  noteDialogVisible.value = true
+}
+
+// 保存复盘记录（弹窗）
+const saveNoteDialog = async () => {
+  if (!currentNoteRow.value) return
+  noteSaving.value = true
+  try {
+    const res = await updateDeliveryReviewNote(currentNoteRow.value.id, noteDialogContent.value)
+    if (res.code === 200) {
+      currentNoteRow.value.review_note = noteDialogContent.value
+      noteDialogDirty.value = false
+      noteDialogVisible.value = false
+      ElMessage.success('复盘记录已保存')
+    } else {
+      ElMessage.error(res.message || '保存失败')
+    }
+  } catch (error) {
+    ElMessage.error('保存失败')
+  } finally {
+    noteSaving.value = false
   }
 }
 
@@ -637,6 +709,56 @@ onMounted(() => {
 
 .review-input :deep(.el-textarea__inner) {
   font-size: 12px;
+}
+
+/* 表格内复盘单元格 */
+.review-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+
+.review-preview {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #606266;
+  cursor: pointer;
+  max-width: 200px;
+}
+
+.review-preview:hover {
+  color: #409eff;
+}
+
+.review-btn {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+/* 弹窗样式 */
+.note-dialog-tip {
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: #606266;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.note-textarea :deep(.el-textarea__inner) {
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.dialog-tip {
+  font-size: 12px;
+  color: #909399;
+  align-self: center;
 }
 
 .pagination-wrapper {

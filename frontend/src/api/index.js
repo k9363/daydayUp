@@ -516,3 +516,39 @@ export function getCycleByDate(tradeDate) {
 export function getLatestCycle() {
   return request.get('/cycle/latest')
 }
+
+// 股票搜索（自动补全）
+export function searchStocks(q) {
+  return request.get('/metadata/stocks/search', { params: { q } })
+}
+
+// ==================== 炒股笔记 API ====================
+
+export function getNoteList(params) {
+  return request.get('/note/notes', { params })
+}
+
+export function getNote(noteId) {
+  return request.get(`/note/notes/${noteId}`)
+}
+
+export function createNote(data) {
+  return request.post('/note/notes', data)
+}
+
+export function updateNote(noteId, data) {
+  return request.put(`/note/notes/${noteId}`, data)
+}
+
+export function deleteNote(noteId) {
+  return request.delete(`/note/notes/${noteId}`)
+}
+
+export function toggleNotePin(noteId) {
+  return request.put(`/note/notes/${noteId}/pin`)
+}
+
+export function getNoteTags() {
+  return request.get('/note/notes/tags')
+}
+

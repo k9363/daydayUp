@@ -21,6 +21,7 @@ from models.factor import FactorDefine
 from models.expression import ScoreExpression
 from models.dailynote import DailyNote
 from models.cycle import Cycle, CycleSubPeriod, CycleTradeDay
+from models.stocknote import StockNote
 
 
 def init_db(app):

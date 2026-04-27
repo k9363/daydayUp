@@ -76,7 +76,13 @@ const routes = [
         path: 'cycle',
     name: 'CycleManagement',
     component: () => import('@/views/CycleManagement.vue'),
-    meta: { title: '周期管理' }
+        meta: { title: '周期管理' }
+  },
+  {
+        path: 'notes',
+    name: 'StockNotes',
+    component: () => import('@/views/StockNotes.vue'),
+        meta: { title: '炒股笔记' }
   }
 ]
   }

@@ -781,6 +781,33 @@ def get_stocks_with_sectors():
         return jsonify({'code': 500, 'message': str(e)}), 500
 
 
+@metadata_bp.route('/stocks/search', methods=['GET'])
+def search_stocks():
+    """股票搜索（轻量接口，用于自动补全）
+    - 按代码或名称模糊匹配
+    - 返回限定字段：stock_code, stock_name
+    """
+    try:
+        q = request.args.get('q', '').strip()
+        if not q:
+            return jsonify({'code': 200, 'data': []})
+
+        limit = min(request.args.get('limit', 10, type=int), 20)
+
+        query = db.session.query(StockBasic.stock_code, StockBasic.stock_name).filter(
+            db.or_(
+                StockBasic.stock_code.ilike(f'%{q}%'),
+                StockBasic.stock_name.ilike(f'%{q}%')
+            )
+        ).limit(limit)
+
+        results = [{'stock_code': row[0], 'stock_name': row[1]} for row in query]
+        return jsonify({'code': 200, 'data': results})
+    except Exception as e:
+        logger.exception("股票搜索失败")
+        return jsonify({'code': 500, 'message': str(e)}), 500
+
+
 @metadata_bp.route('/sectors/all', methods=['GET'])
 def get_all_sectors():
     """获取所有板块列表（用于下拉选择）"""

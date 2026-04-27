@@ -67,6 +67,11 @@
           <el-icon><Calendar /></el-icon>
           <span>周期管理</span>
         </el-menu-item>
+
+        <el-menu-item index="/notes">
+          <el-icon><Notebook /></el-icon>
+          <span>炒股笔记</span>
+        </el-menu-item>
         
         <el-sub-menu index="delivery-group">
           <template #title>

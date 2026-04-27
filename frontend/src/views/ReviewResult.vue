@@ -328,7 +328,7 @@
         <template #header>
           <span>成交额 Top 100 股票明细</span>
         </template>
-        <el-table :data="top100Detail" stripe style="width: 100%" max-height="500">
+        <el-table :data="top100Detail" stripe style="width: 100%" max-height="500" :row-class-name="getRowClass">
           <el-table-column type="index" label="排名" width="80" align="center" />
           <el-table-column prop="code" label="代码" width="100" />
           <el-table-column prop="name" label="名称" width="120" />
@@ -519,6 +519,8 @@ import SectorAnalysis from './components/review/SectorAnalysis.vue'
 const route = useRoute()
 const router = useRouter()
 const taskId = route.params.id
+const highlightStockCode = ref(route.query.stock_code || '')
+const highlightRowRef = ref(null)
 
 // 响应式数据
 const loading = ref(true)
@@ -1285,6 +1287,24 @@ const getTagTextColor = (color) => {
   return brightness > 128 ? '#000' : '#fff'
 }
 
+// 行高亮样式（从笔记跳转时定位）
+const getRowClass = ({ row }) => {
+  if (highlightStockCode.value && row.code === highlightStockCode.value) {
+    return 'highlighted-row'
+  }
+  return ''
+}
+
+// 滚动到目标行
+const scrollToHighlightedRow = () => {
+  nextTick(() => {
+    const el = document.querySelector('.highlighted-row')
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  })
+}
+
 // 初始化富文本编辑器
 // （已移除，NoteEditor 组件自行管理 Quill 实例）
 
@@ -1342,6 +1362,11 @@ const fetchChartData = async () => {
       
       // 数据加载完成，设置 loading 为 false
       loading.value = false
+
+      // 如果是从笔记跳转来的，滚动到目标行
+      if (highlightStockCode.value) {
+        scrollToHighlightedRow()
+      }
       
       // 加载股票标签
       const stockCodes = (chartData.value?.top10FactorStocks || []).map(s => s.code)
@@ -2221,5 +2246,16 @@ watch(() => chartData.value, () => {
 
 .rich-editor :deep(.ql-container) {
   border-radius: 0 0 4px 4px;
+}
+
+/* 从笔记跳转时高亮目标股票行 */
+:deep(.highlighted-row) {
+  background-color: #ecf5ff !important;
+}
+
+:deep(.highlighted-row td) {
+  background-color: #ecf5ff !important;
+  color: #409eff;
+  font-weight: 600;
 }
 </style>
