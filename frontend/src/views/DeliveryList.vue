@@ -212,7 +212,7 @@
                 {{ row.commission?.toFixed(2) || '-' }}
               </template>
             </el-table-column>
-            <el-table-column label="复盘记录" min-width="180">
+            <el-table-column label="复盘记录" min-width="320">
               <template #default="{ row }">
                 <div class="review-cell">
                   <span
@@ -714,16 +714,16 @@ onMounted(() => {
 /* 表格内复盘单元格 */
 .review-cell {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   min-height: 28px;
 }
 
 .review-preview {
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
   font-size: 12px;
   color: #606266;
   cursor: pointer;
