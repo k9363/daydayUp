@@ -138,10 +138,20 @@ class SchedulerService:
                 logger.info("📥 [元数据补充] 开始: 概念板块 + 成分股")
                 concept = svc.supplement_concept_sectors_from_akshare(db.session)
                 logger.info(f"📥 [元数据补充] 概念完成: {concept}")
+                # 个股列表补缺（新股/北交所）：源 TA-CN stock-list（tushare+东财最全，含当天上市新股）
+                # baostock 列表滞后/无北交所，靠这步每日补齐，新股上市当天即进元数据
+                logger.info("📥 [元数据补充] 开始: 个股列表（新股/北交所）")
+                stocks = None
+                try:
+                    from routes.metadata import _supplement_stocks_impl
+                    stocks = _supplement_stocks_impl()
+                    logger.info(f"📥 [元数据补充] 个股完成: {stocks}")
+                except Exception as se:
+                    logger.error(f"⚠️ 个股补缺失败（不影响板块补充）: {se}")
                 logger.info(
-                    f"✅ AKShare 元数据增量补充全部完成: industry={industry}, concept={concept}"
+                    f"✅ AKShare 元数据增量补充全部完成: industry={industry}, concept={concept}, stocks={stocks}"
                 )
-                return {"success": True, "industry": industry, "concept": concept}
+                return {"success": True, "industry": industry, "concept": concept, "stocks": stocks}
         except Exception as e:
             logger.error(f"❌ AKShare 元数据增量补充失败: {e}", exc_info=True)
             return {"success": False, "error": str(e)}

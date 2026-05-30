@@ -1905,3 +1905,62 @@ def market_amount_series():
     except Exception as e:
         logger.exception("获取全市场成交额序列失败")
         return jsonify({'code': 500, 'message': str(e)}), 500
+
+
+def _supplement_stocks_impl():
+    """用 TA-CN /api/sync/stock-list 补全 stock_basic 缺失的个股（新股、北交所等）。
+
+    根因：daydayUp stock_basic 用 baostock 初始化，baostock 列表滞后、无增量，新股
+    （如 301666 当天上市）/北交所会漏。TA-CN stock-list 源自 stock_basic_info
+    （tushare+东财合并最全，含当天新股+北交所+name），优先 tushare。
+    日线无需单独处理：元数据补上后，data_sync 单日 tushare 快速路径自动同步。
+    返回 {added, updated, total}。
+    """
+    import os
+    import requests
+    tacn = os.getenv('TACN_API_BASE', 'http://host.docker.internal:8000').rstrip('/')
+    token = os.getenv('INTERNAL_TRIGGER_TOKEN', '')
+    headers = {'X-Internal-Token': token} if token else {}
+    resp = requests.get(f"{tacn}/api/sync/stock-list", headers=headers, timeout=60)
+    resp.raise_for_status()
+    items = resp.json().get('items', [])
+    added = updated = 0
+    for it in items:
+        full = (it.get('code') or '').strip()
+        name = (it.get('name') or '').strip()
+        if not full or '.' not in full:
+            continue
+        exch = full.split('.', 1)[0]
+        if exch not in ('sh', 'sz', 'bj'):
+            continue
+        market = f'stock_{exch}'
+        st = StockBasic.query.filter_by(stock_code=full).first()
+        if st:
+            if st.stock_type != 'stock' or st.exchange != exch:
+                st.stock_type = 'stock'
+                st.exchange = exch
+                st.market = market
+                if name and not st.stock_name:
+                    st.stock_name = name
+                updated += 1
+            continue
+        db.session.add(StockBasic(
+            stock_code=full, stock_name=(name or full),
+            stock_type='stock', exchange=exch, market=market,
+        ))
+        added += 1
+    db.session.commit()
+    logger.info(f"补全 stock_basic（源 TA-CN stock-list）: 新增 {added}, 更新 {updated}, 共 {len(items)}")
+    return {'added': added, 'updated': updated, 'total': len(items)}
+
+
+@metadata_bp.route('/supplement-stocks', methods=['POST'])
+def supplement_stocks():
+    """补全 stock_basic 缺失个股（新股/北交所），源 TA-CN stock-list。详见 _supplement_stocks_impl。"""
+    try:
+        data = _supplement_stocks_impl()
+        return jsonify({'code': 200, 'message': '操作成功', 'data': data})
+    except Exception as e:
+        db.session.rollback()
+        logger.exception("补全股票（TA-CN stock-list）失败")
+        return jsonify({'code': 500, 'message': str(e)}), 500
