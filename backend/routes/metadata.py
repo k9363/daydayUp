@@ -1966,60 +1966,68 @@ def supplement_stocks():
         return jsonify({'code': 500, 'message': str(e)}), 500
 
 
-@metadata_bp.route('/backfill-missing-kline', methods=['POST'])
-def backfill_missing_kline():
-    """回补缺日线的个股（北交所/新股）近 N 个交易日历史日线。
-
-    baostock 无北交所、data_sync 的 tushare 快速路径仅单日有效，故逐日调 TA-CN
-    /api/sync/market-daily（tushare，含北交所/新股），提取「stock_daily_kline 完全无数据」
-    的个股，复用 save_kline_data 写入。Query: days=90（默认 90，上限 250）。
-    """
+def _backfill_missing_kline_worker(app, days):
+    """后台线程执行回补（route 同步会超 gunicorn 30s worker timeout，故异步）。"""
     import os
     import time
     import requests
     from sqlalchemy import text
     from services.data_sync_service import DataSyncService
-    try:
-        days = max(1, min(int(request.args.get('days', 90)), 250))
-        # 缺日线个股：stock_basic 有、stock_daily_kline 完全无数据（北交所 + 新股）
-        rows = db.session.execute(text(
-            "SELECT b.stock_code FROM stock_basic b "
-            "WHERE b.stock_type='stock' AND NOT EXISTS "
-            "(SELECT 1 FROM stock_daily_kline k WHERE k.stock_code=b.stock_code)"
-        )).fetchall()
-        missing = set(r[0] for r in rows)
-        if not missing:
-            return jsonify({'code': 200, 'message': '无缺日线个股', 'data': {'missing_codes': 0}})
-        dates = [r[0] for r in db.session.execute(text(
-            "SELECT DISTINCT trade_date FROM stock_daily_kline ORDER BY trade_date DESC LIMIT :n"
-        ), {'n': days}).fetchall()]
-        tacn = os.getenv('TACN_API_BASE', 'http://host.docker.internal:8000').rstrip('/')
-        token = os.getenv('INTERNAL_TRIGGER_TOKEN', '')
-        headers = {'X-Internal-Token': token} if token else {}
-        svc = DataSyncService()
-        total_rows = ok_days = 0
-        for td in dates:
-            tdc = td.replace('-', '')
-            try:
-                resp = requests.get(
-                    f"{tacn}/api/sync/market-daily",
-                    params={'trade_date': tdc, 'include_index': 'false', 'include_funds': 'false'},
-                    headers=headers, timeout=60,
-                )
-                if resp.status_code != 200:
-                    continue
-                items = [it for it in resp.json().get('items', []) if it.get('code') in missing]
-                if items:
-                    svc.save_kline_data(db.session, items, 'daily', {})
-                    total_rows += len(items)
-                ok_days += 1
-            except Exception as de:
-                logger.warning(f"回补 {td} 失败: {de}")
-            time.sleep(1.5)
-        logger.info(f"回补缺日线完成: 缺 {len(missing)} 只, {ok_days}/{len(dates)} 日, 写入 {total_rows} 行")
-        return jsonify({'code': 200, 'message': '操作成功',
-                        'data': {'missing_codes': len(missing), 'days': ok_days, 'rows_written': total_rows}})
-    except Exception as e:
-        db.session.rollback()
-        logger.exception("回补缺日线失败")
-        return jsonify({'code': 500, 'message': str(e)}), 500
+    with app.app_context():
+        try:
+            rows = db.session.execute(text(
+                "SELECT b.stock_code FROM stock_basic b "
+                "WHERE b.stock_type='stock' AND NOT EXISTS "
+                "(SELECT 1 FROM stock_daily_kline k WHERE k.stock_code=b.stock_code)"
+            )).fetchall()
+            missing = set(r[0] for r in rows)
+            if not missing:
+                logger.info("回补：无缺日线个股")
+                return
+            dates = [r[0] for r in db.session.execute(text(
+                "SELECT DISTINCT trade_date FROM stock_daily_kline ORDER BY trade_date DESC LIMIT :n"
+            ), {'n': days}).fetchall()]
+            tacn = os.getenv('TACN_API_BASE', 'http://host.docker.internal:8000').rstrip('/')
+            token = os.getenv('INTERNAL_TRIGGER_TOKEN', '')
+            headers = {'X-Internal-Token': token} if token else {}
+            svc = DataSyncService()
+            total_rows = ok_days = 0
+            for td in dates:
+                tdc = td.replace('-', '')
+                try:
+                    resp = requests.get(
+                        f"{tacn}/api/sync/market-daily",
+                        params={'trade_date': tdc, 'include_index': 'false', 'include_funds': 'false'},
+                        headers=headers, timeout=60,
+                    )
+                    if resp.status_code != 200:
+                        continue
+                    items = [it for it in resp.json().get('items', []) if it.get('code') in missing]
+                    if items:
+                        svc.save_kline_data(db.session, items, 'daily', {})
+                        total_rows += len(items)
+                    ok_days += 1
+                except Exception as de:
+                    logger.warning(f"回补 {td} 失败: {de}")
+                time.sleep(1.5)
+            logger.info(f"✅ 后台回补完成: 缺 {len(missing)} 只, {ok_days}/{len(dates)} 日, 写入 {total_rows} 行")
+        except Exception:
+            logger.exception("后台回补缺日线失败")
+        finally:
+            db.session.remove()
+
+
+@metadata_bp.route('/backfill-missing-kline', methods=['POST'])
+def backfill_missing_kline():
+    """回补缺日线个股（北交所/新股）近 N 日历史，**异步后台**执行（避免 gunicorn 30s timeout）。
+
+    逐日调 TA-CN /api/sync/market-daily（tushare，含北交所/新股）提取缺日线 code，
+    save_kline_data 写入。Query: days=90（上限 250）。立即返回，进度见后端日志。
+    """
+    import threading
+    from flask import current_app
+    days = max(1, min(int(request.args.get('days', 90)), 250))
+    app = current_app._get_current_object()
+    threading.Thread(target=_backfill_missing_kline_worker, args=(app, days), daemon=True).start()
+    return jsonify({'code': 200, 'message': f'回补已在后台启动（近 {days} 个交易日）',
+                    'data': {'days': days}})
