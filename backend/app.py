@@ -122,8 +122,12 @@ def create_app(config_name=None):
     app.register_blueprint(external_bp, url_prefix='/api/external')
     app.register_blueprint(email_bp, url_prefix='/api/email')
 
-    # 启动时登录 Baostock
-    _init_baostock_login()
+    # 启动时登录 Baostock —— 放后台线程，避免 gunicorn 多 worker 并发 bs.login()。
+    # 根因：gunicorn -w 4，每个 worker 启动都 create_app→bs.login()，baostock 同账户
+    # 多 session 并发登录会"网络接收错误"，同步重试 3×3s 阻塞 worker 启动（restart 卡几分钟、
+    # 健康检查迟迟不 200）。改后台线程：启动立即返回，登录失败不阻塞；baostock 兜底用时各自 login。
+    import threading as _bs_th
+    _bs_th.Thread(target=_init_baostock_login, daemon=True).start()
 
     # 注册退出时登出 Baostock
     atexit.register(_cleanup_baostock)
