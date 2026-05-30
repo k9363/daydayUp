@@ -34,6 +34,8 @@ dist/
 .env
 .env.local
 .env.*.local
+.env.server
+backend/.env.server
 backend/.tgb_cookie
 backend/.tgb_credentials
 backend/.scheduler_init.lock

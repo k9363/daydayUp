@@ -20,18 +20,12 @@ services:
       - ./backend:/app
       - daydayup_logs:/app/logs
       - daydayup_uploads:/app/uploads
+    env_file:
+      # DB/SECRET 等敏感配置移到 .env.server（.gitignore 排除，不进仓库；rsync 到服务器 backend/）
+      - ./backend/.env.server
     environment:
       TZ: "Asia/Shanghai"
       PYTHONUNBUFFERED: "1"
-      # MySQL: 复用现有的 mysql 容器（暴露在宿主 0.0.0.0:3306）
-      DB_TYPE: "mysql"
-      DB_HOST: "host.docker.internal"
-      DB_PORT: "3306"
-      DB_USER: "root"
-      DB_PASSWORD: "123456"
-      DB_NAME: "daydayup"
-      SECRET_KEY: "daydayup-server-2026-change-me"
-      FLASK_ENV: "production"
     networks:
       - daydayup-network
 
