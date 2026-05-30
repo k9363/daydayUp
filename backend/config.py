@@ -156,7 +156,7 @@ class Config:
             'pool_pre_ping': True,        # 每次使用连接前检查连接是否有效
             'connect_args': {
                 'connect_timeout': 10,    # 连接超时时间
-                'read_timeout': 30,      # 读取超时
+                'read_timeout': 60,      # 读取超时（全市场聚合查询较重，放宽防 2013 timed out）
                 'write_timeout': 30,     # 写入超时
             }
         }

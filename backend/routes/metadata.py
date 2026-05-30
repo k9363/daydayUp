@@ -1876,8 +1876,18 @@ def market_amount_series():
         if not end_date:
             row = db.session.execute(text("SELECT MAX(trade_date) FROM stock_daily_kline")).fetchone()
             end_date = (row[0] if row and row[0] else datetime.now().strftime('%Y-%m-%d'))
-        # 下界：N 个交易日约 N*2 自然日，留 buffer，避免全历史扫描
-        start_date = (datetime.strptime(end_date, '%Y-%m-%d') - timedelta(days=days * 2 + 15)).strftime('%Y-%m-%d')
+        # 下界：直接取第 days 个交易日（走 idx_daily_trade_date，毫秒级），使主聚合查询
+        # 只扫精确 N 个交易日。早先按「自然日 days*2+15」估下界，days=50 要多扫约 60% 数据，
+        # JOIN+GROUP BY+filesort 顶破连接 read_timeout 触发 MySQL 2013 (timed out)。
+        off = max(0, days - 1)
+        lb = db.session.execute(text(
+            "SELECT DISTINCT trade_date FROM stock_daily_kline "
+            "WHERE trade_date <= :end ORDER BY trade_date DESC LIMIT :off, 1"
+        ), {'end': end_date, 'off': off}).fetchone()
+        if lb and lb[0]:
+            start_date = lb[0]
+        else:
+            start_date = (datetime.strptime(str(end_date), '%Y-%m-%d') - timedelta(days=days * 2 + 15)).strftime('%Y-%m-%d')
         sql = text("""
             SELECT k.trade_date AS td,
                    SUM(k.turnover) AS total,
