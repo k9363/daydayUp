@@ -13,12 +13,13 @@ services:
       # 让容器内可通过 host.docker.internal 访问宿主机网络（mysql 容器在宿主网络）
       - "host.docker.internal:host-gateway"
     volumes:
+      # 源码 overlay（2026-05-30）：后端改代码只需 rsync 到宿主机 backend/ + docker restart 秒级生效，免 rebuild
+      #   与 TA-CN overlay 一致；依赖(requirements)变更时仍需 rebuild。
+      #   配置走下方 environment（load_dotenv override=False，不会被 /app/.env 覆盖）。
+      #   .tgb_cookie/.tgb_credentials 随 ./backend:/app 一起挂入（/app/.tgb_cookie），无需单独挂载。
+      - ./backend:/app
       - daydayup_logs:/app/logs
       - daydayup_uploads:/app/uploads
-      # 淘股吧抓取凭证（rsync 到服务器 backend/，通过 volume 挂进容器）
-      # tgb_common.load_cookie() 会读 /app/.tgb_cookie（相对 services/ 上两级）
-      - ./backend/.tgb_cookie:/app/.tgb_cookie:ro
-      - ./backend/.tgb_credentials:/app/.tgb_credentials:ro
     environment:
       TZ: "Asia/Shanghai"
       PYTHONUNBUFFERED: "1"
