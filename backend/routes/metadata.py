@@ -1856,3 +1856,52 @@ def update_delivery_review_note(delivery_id):
         db.session.rollback()
         logger.exception("更新复盘记录失败")
         return jsonify({'code': 500, 'message': str(e)}), 500
+
+
+@metadata_bp.route('/market-amount-series', methods=['GET'])
+def market_amount_series():
+    """全市场总成交额近 N 个交易日序列（仅个股，排除指数/ETF/债券）。
+
+    供 TA-CN 全市场分析读取（替代其自维护的 market_total_daily + tushare 全量拉取）。
+    Query: end_date=YYYY-MM-DD 或 YYYYMMDD（默认最新交易日），days=22（上限 120）
+    Returns: {code:200, data:[{trade_date, total_amount_yi(亿元), n_stocks, up_stocks, down_stocks}, ...]}（按日期升序）
+    """
+    from sqlalchemy import text
+    from datetime import datetime, timedelta
+    try:
+        end_date = (request.args.get('end_date') or '').strip().replace('/', '-')
+        days = max(1, min(int(request.args.get('days', 22)), 120))
+        if len(end_date) == 8 and end_date.isdigit():
+            end_date = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
+        if not end_date:
+            row = db.session.execute(text("SELECT MAX(trade_date) FROM stock_daily_kline")).fetchone()
+            end_date = (row[0] if row and row[0] else datetime.now().strftime('%Y-%m-%d'))
+        # 下界：N 个交易日约 N*2 自然日，留 buffer，避免全历史扫描
+        start_date = (datetime.strptime(end_date, '%Y-%m-%d') - timedelta(days=days * 2 + 15)).strftime('%Y-%m-%d')
+        sql = text("""
+            SELECT k.trade_date AS td,
+                   SUM(k.turnover) AS total,
+                   COUNT(*) AS n,
+                   SUM(k.change_percent > 0) AS up_n,
+                   SUM(k.change_percent < 0) AS down_n
+            FROM stock_daily_kline k
+            JOIN stock_basic b ON k.stock_code = b.stock_code
+            WHERE b.stock_type = 'stock'
+              AND k.trade_date <= :end AND k.trade_date >= :start
+            GROUP BY k.trade_date
+            ORDER BY k.trade_date DESC
+            LIMIT :days
+        """)
+        rows = db.session.execute(sql, {'end': end_date, 'start': start_date, 'days': days}).fetchall()
+        data = [{
+            'trade_date': r[0],
+            'total_amount_yi': round(float(r[1]) / 1e8, 2) if r[1] is not None else None,
+            'n_stocks': int(r[2]),
+            'up_stocks': int(r[3]) if r[3] is not None else None,
+            'down_stocks': int(r[4]) if r[4] is not None else None,
+        } for r in rows]
+        data.reverse()  # 升序返回
+        return jsonify({'code': 200, 'message': '操作成功', 'data': data, 'total': len(data)})
+    except Exception as e:
+        logger.exception("获取全市场成交额序列失败")
+        return jsonify({'code': 500, 'message': str(e)}), 500
