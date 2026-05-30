@@ -23,6 +23,80 @@ from config import (
 logger = logging.getLogger(__name__)
 
 
+def trigger_tacn_batch_analysis(trade_date=None):
+    """复盘成功后 HTTP 触发 TA-CN 全市场综合分析。
+
+    放在「复盘真正完成」处统一触发，覆盖所有入口（定时 / 手动重跑 / 异步回调完成）——
+    之前触发只挂在 scheduler 的 18:00 cron 路径，手动重跑/异步完成都不会触发。
+    非阻塞（5s timeout），失败只 log，不影响复盘成功状态。
+
+    Args:
+        trade_date: 'YYYY-MM-DD'，传给 TA-CN 让其分析同一交易日；None=TA-CN 取最新交易日
+    """
+    import os
+    import requests
+    tacn_base = os.getenv('TACN_API_BASE', 'http://host.docker.internal:8000')
+    token = os.getenv('INTERNAL_TRIGGER_TOKEN', '')
+    date_param = trade_date.replace('-', '') if trade_date else None  # YYYY-MM-DD → YYYYMMDD
+    try:
+        resp = requests.post(
+            f'{tacn_base}/api/analysis/index/batch/internal/trigger',
+            json={'date': date_param, 'model': 'deepseek-v4-pro'},
+            headers={'X-Internal-Token': token} if token else {},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            logger.info(f"🌐 已触发 TA-CN 全市场综合分析 task_id={resp.json().get('task_id')} (date={date_param})")
+        else:
+            logger.warning(f"⚠️ TA-CN 触发返回 HTTP {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        logger.warning(f"⚠️ 触发 TA-CN 全市场分析失败（不影响复盘）: {e}")
+
+
+def _wait_for_market_report(trade_date, timeout_s=720, interval_s=20):
+    """复盘发邮件前，轮询等待 TA-CN 当日全市场综合分析就绪。
+
+    TA-CN 全市场分析是上面 trigger_tacn_batch_analysis 异步触发的（HTTP fire-and-forget），
+    LLM 跑 1.6W 字需数分钟；不等待会导致复盘邮件赶在分析完成前发出、缺「全市场综合分析」段
+    （实测 387：复盘 18:55 发邮件，全市场分析 19:01 才就绪）。
+
+    就绪（external_analysis 出现当日 batch 记录且含全文）返回 True；超时返回 False
+    （调用方仍照常发邮件，只是可能不含全市场分析，不阻断复盘）。
+    """
+    import time
+    import json as _json
+    from models.external_analysis import ExternalAnalysis
+    if not trade_date:
+        return False
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            db.session.expire_all()
+            ext = (ExternalAnalysis.query
+                   .filter(ExternalAnalysis.trade_date == trade_date)
+                   .filter(ExternalAnalysis.source.like('%batch%'))
+                   .order_by(ExternalAnalysis.id.desc()).first())
+            if ext:
+                raw = ext.raw_report
+                if isinstance(raw, str):
+                    try:
+                        raw = _json.loads(raw)
+                    except Exception:
+                        raw = {}
+                rep = ''
+                if isinstance(raw, dict):
+                    node = raw.get('result') if isinstance(raw.get('result'), dict) else raw
+                    rep = node.get('report') or raw.get('report') or ''
+                if isinstance(rep, str) and len(rep) > 2000:
+                    logger.info(f"✅ 全市场分析已就绪（{len(rep)} 字），开始发复盘邮件 (date={trade_date})")
+                    return True
+        except Exception as e:
+            logger.warning(f"等待全市场分析轮询出错（继续等待）: {e}")
+        time.sleep(interval_s)
+    logger.warning(f"⚠️ 等待全市场分析超时（{timeout_s}s, date={trade_date}），照常发邮件（可能不含全市场分析）")
+    return False
+
+
 def _build_factor_tree(factor_definitions):
     """
     构建因子依赖树
@@ -931,13 +1005,42 @@ class ReviewTaskService:
             db.session.commit()
 
             logger.info(f"📊 ========== 复盘任务完成: {trade_date} ==========")
+            # 复盘成功 → 触发 TA-CN 全市场综合分析（覆盖手动重跑/同步完成路径）
+            trigger_tacn_batch_analysis(trade_date)
+            # 复盘成功 → 仅【定时任务】触发的复盘自动发邮件（task_name 带 [定时] 标记）；
+            # 手动重跑/Excel 任务等不自动发，用户可在报告页通过「发送邮件」按钮手动发
+            # （/api/email/send-review/<task_id>）。失败只 warn 不影响复盘成功状态。
+            if '[定时]' in (task.task_name or ''):
+                try:
+                    # 等 TA-CN 全市场分析就绪再发，避免邮件赶在分析完成前发出（缺全市场分析段）
+                    _wait_for_market_report(trade_date)
+                    from services.email_service import send_daily_review_email
+                    _res = send_daily_review_email(task.id)
+                    if not _res.get('success') and not _res.get('skipped'):
+                        logger.warning(f"⚠️ 复盘邮件未发出: {_res.get('error')}")
+                except Exception as _ee:
+                    logger.warning(f"⚠️ 复盘邮件发送异常（不影响复盘）: {_ee}")
             return task
 
         except Exception as e:
-            task.status = 'failed'
-            task.end_time = datetime.now()
-            task.error_message = str(e)
-            db.session.commit()
+            # 先 rollback 清掉可能失效的事务，否则标 failed 的写入也会失败 → 僵尸 running
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            try:
+                t = db.session.get(ReviewTask, task.id) if getattr(task, 'id', None) else task
+                if t is not None:
+                    t.status = 'failed'
+                    t.end_time = datetime.now()
+                    t.error_message = str(e)[:1000]
+                    db.session.commit()
+            except Exception as e2:
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+                logger.error(f"❌ 标记复盘失败状态时再次出错: {e2}")
             logger.error(f"❌ 复盘任务失败: {e}")
             raise Exception(f"复盘执行失败: {str(e)}")
 
@@ -1056,13 +1159,43 @@ class ReviewTaskService:
             db.session.commit()
 
             logger.info(f"📊 ========== 复盘任务完成(继续执行): {trade_date} ==========")
+            # 复盘成功 → 触发 TA-CN 全市场综合分析（覆盖异步回调完成路径）
+            trigger_tacn_batch_analysis(trade_date)
+            # 复盘成功 → 仅【定时任务】触发的复盘自动发邮件（task_name 带 [定时] 标记）；
+            # 手动重跑/Excel 任务等不自动发，用户可在报告页通过「发送邮件」按钮手动发
+            # （/api/email/send-review/<task_id>）。失败只 warn 不影响复盘成功状态。
+            if '[定时]' in (task.task_name or ''):
+                try:
+                    # 等 TA-CN 全市场分析就绪再发，避免邮件赶在分析完成前发出（缺全市场分析段）
+                    _wait_for_market_report(trade_date)
+                    from services.email_service import send_daily_review_email
+                    _res = send_daily_review_email(task.id)
+                    if not _res.get('success') and not _res.get('skipped'):
+                        logger.warning(f"⚠️ 复盘邮件未发出: {_res.get('error')}")
+                except Exception as _ee:
+                    logger.warning(f"⚠️ 复盘邮件发送异常（不影响复盘）: {_ee}")
             return task
 
         except Exception as e:
-            task.status = 'failed'
-            task.end_time = datetime.now()
-            task.error_message = str(e)
-            db.session.commit()
+            # session 可能因前序查询失败而处于 invalid-transaction 状态，
+            # 必须先 rollback 清掉失效事务，否则标 failed 的写入本身也会失败 → 任务卡在 running（僵尸）
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            try:
+                t = db.session.get(ReviewTask, task.id) if getattr(task, 'id', None) else task
+                if t is not None:
+                    t.status = 'failed'
+                    t.end_time = datetime.now()
+                    t.error_message = str(e)[:1000]
+                    db.session.commit()
+            except Exception as e2:
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+                logger.error(f"❌ 标记复盘失败状态时再次出错: {e2}")
             logger.error(f"❌ 复盘任务继续执行失败: {e}")
             raise Exception(f"复盘继续执行失败: {str(e)}")
 
@@ -1103,11 +1236,8 @@ class ReviewTaskService:
         logger.info(f"=== DEBUG: expected_stock_codes前10: {expected_stock_codes[:10]}")
         logger.info(f"=== DEBUG: expected_stock_codes后10: {expected_stock_codes[-10:]}")
         
-        # 查询数据库中已有的股票代码
-        existing_in_db = db_session.query(StockDailyKLine.stock_code).distinct().all()
-        existing_in_db_codes = [e.stock_code for e in existing_in_db]
-        logger.info(f"=== DEBUG: K线表中存在的股票代码数量: {len(existing_in_db_codes)}")
-        logger.info(f"=== DEBUG: K线表中的股票代码前10: {existing_in_db_codes[:10]}")
+        # （已移除一条仅用于 debug 日志的 `SELECT DISTINCT stock_code FROM stock_daily_kline`，
+        #   它对 140 万行做全表去重耗时 ~12s 且不参与任何逻辑；真正判断用下方按 trade_date 分批查询）
 
         if not expected_stock_codes:
             raise Exception("元数据表中没有找到股票列表，请先进行元数据初始化")

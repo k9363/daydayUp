@@ -1,0 +1,64 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    image: daydayup-backend:server-amd64
+    container_name: daydayup-backend
+    restart: always
+    ports:
+      # 暴露到宿主 5000，TA-CN 容器继续走 host.docker.internal:5000 即可
+      - "5000:5000"
+    extra_hosts:
+      # 让容器内可通过 host.docker.internal 访问宿主机网络（mysql 容器在宿主网络）
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - daydayup_logs:/app/logs
+      - daydayup_uploads:/app/uploads
+      # 淘股吧抓取凭证（rsync 到服务器 backend/，通过 volume 挂进容器）
+      # tgb_common.load_cookie() 会读 /app/.tgb_cookie（相对 services/ 上两级）
+      - ./backend/.tgb_cookie:/app/.tgb_cookie:ro
+      - ./backend/.tgb_credentials:/app/.tgb_credentials:ro
+    environment:
+      TZ: "Asia/Shanghai"
+      PYTHONUNBUFFERED: "1"
+      # MySQL: 复用现有的 mysql 容器（暴露在宿主 0.0.0.0:3306）
+      DB_TYPE: "mysql"
+      DB_HOST: "host.docker.internal"
+      DB_PORT: "3306"
+      DB_USER: "root"
+      DB_PASSWORD: "123456"
+      DB_NAME: "daydayup"
+      SECRET_KEY: "daydayup-server-2026-change-me"
+      FLASK_ENV: "production"
+    networks:
+      - daydayup-network
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: daydayup-frontend:server-amd64
+    container_name: daydayup-frontend
+    restart: always
+    ports:
+      # 接管宿主机原 nginx 的端口
+      - "20080:80"
+    volumes:
+      # 与 backend 共享 uploads，nginx 直接对外提供静态文件
+      - daydayup_uploads:/usr/share/nginx/uploads:ro
+    depends_on:
+      - backend
+    networks:
+      - daydayup-network
+
+volumes:
+  daydayup_logs:
+    name: daydayup_logs
+  daydayup_uploads:
+    name: daydayup_uploads
+
+networks:
+  daydayup-network:
+    driver: bridge
+    name: daydayup-network

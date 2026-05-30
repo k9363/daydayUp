@@ -1,0 +1,33 @@
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    TZ=Asia/Shanghai
+
+WORKDIR /app
+
+# Aliyun apt mirror to avoid GitHub/Debian official slowness from China
+RUN (sed -i 's|http://deb.debian.org|http://mirrors.aliyun.com|g; s|http://security.debian.org|http://mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+     sed -i 's|http://deb.debian.org|http://mirrors.aliyun.com|g; s|http://security.debian.org|http://mirrors.aliyun.com|g' /etc/apt/sources.list) && \
+    echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt ./
+
+RUN pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+
+COPY backend/ ./
+
+EXPOSE 5000
+
+# 4 workers · 300s timeout (long sync tasks) · stream logs to stdout/stderr
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", \
+     "--timeout", "300", "--graceful-timeout", "30", \
+     "--log-level", "info", "--capture-output", \
+     "--access-logfile", "-", "--error-logfile", "-", \
+     "app:app"]

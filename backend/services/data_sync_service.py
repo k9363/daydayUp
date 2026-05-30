@@ -8,6 +8,7 @@ import time
 import json
 import logging
 import socket
+import concurrent.futures
 from datetime import datetime, timedelta
 from models.kline import (
     StockDailyKLine,
@@ -22,14 +23,47 @@ from models.kline import (
 logger = logging.getLogger(__name__)
 
 
+# baostock SDK 内部 socket 没有读超时，一旦服务端不发数据，调用会无限阻塞。
+# 用独立线程 + Future.result(timeout=...) 强制中断业务等待。被弃用的工作线程
+# 仍然 hang 在 socket.recv 上，调用方必须把 self.lg 置 None 触发下一次重连，
+# 由 baostock 重新握手时关闭旧 socket，hang 线程才会随之退出。
+_BAOSTOCK_QUERY_TIMEOUT_SEC = 30
+
+
+class BaostockServiceUnavailable(Exception):
+    """baostock 持续超时，判定服务不可用，应中止整个任务"""
+    pass
+
+
+def _call_baostock_with_timeout(call_fn, timeout=_BAOSTOCK_QUERY_TIMEOUT_SEC):
+    # 2026-05-26: 修复 with ThreadPoolExecutor 退出时阻塞 bug
+    #   旧代码 `with ... as ex:` 退出时默认 shutdown(wait=True)，即使主流程已抛
+    #   TimeoutError，with 块还会等 hang 线程跑完（永远等不到），导致 main 也卡死
+    #   现在显式 shutdown(wait=False) 让 hang 线程后台泄漏（接受 baostock SDK 缺陷的代价）
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        future = ex.submit(call_fn)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            raise TimeoutError(f"baostock 调用超时（>{timeout}s）")
+    finally:
+        # 不等线程（hang 线程会留在内存，daydayup-backend 重启时清空）
+        ex.shutdown(wait=False)
+
+
 class DataSyncService:
     """数据同步服务"""
 
     # Baostock 错误码：未登录或登录已过期
     LOGIN_ERROR_CODES = {'10002007', '10002001', '10002002', '10002003'}
 
+    # 连续超时阈值：连续 N 只股票 baostock 查询都超时，判定服务整体不可用，中止任务
+    MAX_CONSECUTIVE_TIMEOUTS = 5
+
     def __init__(self):
         self.lg = None
+        self._consecutive_timeouts = 0
 
     def login(self):
         """登录Baostock，如果已登录则跳过"""
@@ -279,34 +313,46 @@ class DataSyncService:
 
         logger.info(f"查询K线: code={code}, start={start_date}, end={end_date}, freq={bs_freq}")
 
-        # 添加超时保护，防止网络问题时导致 worker 崩溃
-        default_socket = socket.socket
-        original_timeout = socket.getdefaulttimeout()
-        try:
-            socket.setdefaulttimeout(30)  # 30秒超时
+        # baostock 长连接 socket 无读超时，必须用 ThreadPoolExecutor 包整段（query + rs.next() 消费）
+        # 整段超时，避免 hang 在某次 recv 上整夜不返回（task 229 即为此例）
+        def _do_query():
             rs = bs.query_history_k_data_plus(
                 code=code,
                 start_date=start_date,
                 end_date=end_date,
                 fields=fields,
                 frequency=bs_freq,
-                adjustflag=adjustflag
+                adjustflag=adjustflag,
             )
-        except socket.timeout as e:
-            logger.warning(f"Baostock 请求超时: code={code}, {e}")
+            rows = []
+            if rs.error_code == '0':
+                while rs.next():
+                    rows.append(dict(zip(rs.fields, rs.get_row_data())))
+            return rs.error_code, rs.error_msg, rows
+
+        try:
+            error_code, error_msg, data_list = _call_baostock_with_timeout(
+                _do_query, timeout=_BAOSTOCK_QUERY_TIMEOUT_SEC
+            )
+        except TimeoutError as e:
+            self._consecutive_timeouts += 1
+            logger.warning(
+                f"Baostock 查询超时: code={code}, {e}，"
+                f"连续超时 {self._consecutive_timeouts}/{self.MAX_CONSECUTIVE_TIMEOUTS}，触发会话重建"
+            )
+            # 强制下次 ensure_login 重新握手，使旧的 hang 线程随 socket 关闭而释放
+            self.lg = None
+            if self._consecutive_timeouts >= self.MAX_CONSECUTIVE_TIMEOUTS:
+                raise BaostockServiceUnavailable(
+                    f"baostock 连续 {self._consecutive_timeouts} 次查询超时，判定服务不可用"
+                )
             return []
         except Exception as e:
             logger.warning(f"Baostock 请求异常: code={code}, {e}")
             return []
-        finally:
-            socket.setdefaulttimeout(original_timeout)
 
-        logger.info(f"Baostock返回: error_code={rs.error_code}, error_msg={rs.error_msg}")
-
-        data_list = []
-        while (rs.error_code == '0') and rs.next():
-            data_list.append(dict(zip(rs.fields, rs.get_row_data())))
-
+        logger.info(f"Baostock返回: error_code={error_code}, error_msg={error_msg}")
+        self._consecutive_timeouts = 0  # 成功一次即重置计数
         return data_list
 
     def save_kline_data(self, db_session, data_list, frequency, stock_name_map):
@@ -560,13 +606,100 @@ class DataSyncService:
                 task.total_stocks = len(stock_codes)
                 db_session.commit()
 
-            # 断点续传：过滤掉已处理的股票
-            remaining_codes = [code for code in stock_codes if code not in processed_codes_set]
-            logger.info(f"剩余待处理: {len(remaining_codes)}/{len(stock_codes)} 只股票")
-            
+            # 2026-05-26: stock-level 增量过滤 —— 跳过区间内 (code, trade_date) 已齐全的股票
+            #   原行为：record-level 增量（拿完数据才查 existing_set 决定写不写），baostock 5500 次调用全跑
+            #   新行为：先查 MySQL 已有 (code, trade_date)，**根本不调 baostock** for 已齐全的股票
+            #   重跑场景从 25-30min → 几十秒（视未跑完比例）
+            already_done_codes = set()
+            try:
+                from datetime import datetime as _dt, timedelta as _td
+                model_class = self._get_model_class(frequency)
+                # 计算区间内交易日数（粗略：日历日数；查 existing 数会容错）
+                # 简化判断：如果某只股 trade_date 范围 >= 1 即视为齐全（日 K 单日同步场景）
+                sd_obj = _dt.strptime(start_date, "%Y-%m-%d")
+                ed_obj = _dt.strptime(end_date, "%Y-%m-%d")
+                expected_min_count = 1  # 单日同步至少 1 条
+                # SQL: GROUP BY stock_code 取已存在区间内的 count
+                from sqlalchemy import func
+                rows = db_session.query(
+                    model_class.stock_code,
+                    func.count().label("c"),
+                ).filter(
+                    model_class.stock_code.in_(stock_codes),
+                    model_class.trade_date >= start_date,
+                    model_class.trade_date <= end_date,
+                ).group_by(model_class.stock_code).all()
+                already_done_codes = {r.stock_code for r in rows if r.c >= expected_min_count}
+                logger.info(
+                    f"✅ stock-level 增量：{len(already_done_codes)}/{len(stock_codes)} 只股票区间内"
+                    f"[{start_date}~{end_date}]已有数据，跳过 baostock 调用"
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ stock-level 增量检查失败（不影响主流程，全量重跑）: {e}")
+
+            # 断点续传 + 增量：过滤已处理 + 已有完整数据
+            remaining_codes = [code for code in stock_codes
+                               if code not in processed_codes_set and code not in already_done_codes]
+            logger.info(f"剩余待处理: {len(remaining_codes)}/{len(stock_codes)} 只股票"
+                        f"（断点续传跳过 {len(processed_codes_set)} + 已有数据跳过 {len(already_done_codes)}）")
+
             total_processed = len(processed_codes_set)
             total_saved = 0
             failed_codes = []  # 记录失败的股票代码
+
+            # 2026-05-26: Tushare 快速路径 — 单日同步走 TA-CN /api/sync/market-daily 一次拉全市场（<10 秒）
+            # baostock 仅作兜底补缺失。仅对日线 + 单日范围启用，避免覆盖历史回填场景
+            tushare_covered_codes = set()
+            if frequency == 'daily' and start_date == end_date and remaining_codes:
+                try:
+                    import os as _os
+                    import requests as _req
+                    # daydayup-backend 不在 tradingagents-network，无法用 container name DNS
+                    # 走宿主机 IP / host.docker.internal（与 mysql 同款方式）
+                    tacn_base = _os.getenv('TACN_API_BASE', 'http://host.docker.internal:8000')
+                    token = _os.getenv('INTERNAL_TRIGGER_TOKEN', '')
+                    headers = {'X-Internal-Token': token} if token else {}
+                    td_compact = start_date.replace('-', '')
+                    logger.info(f"🚀 Tushare 快速路径开始: 调 TA-CN /api/sync/market-daily?trade_date={td_compact}")
+                    resp = _req.get(
+                        f"{tacn_base}/api/sync/market-daily",
+                        params={'trade_date': td_compact, 'include_funds': 'true', 'include_index': 'true'},
+                        headers=headers,
+                        timeout=60,
+                    )
+                    if resp.status_code == 200:
+                        body = resp.json()
+                        items = body.get('items') or []
+                        # 只取在 remaining_codes 列表里的（不超出本次同步范围）
+                        remaining_set = set(remaining_codes)
+                        relevant_items = [it for it in items if it.get('code') in remaining_set]
+                        if relevant_items:
+                            logger.info(f"✅ Tushare 拿到 {len(items)} 行（本批适用 {len(relevant_items)} 只），开始批量写入")
+                            saved = self.save_kline_data(db_session, relevant_items, frequency, stock_name_map)
+                            total_saved += saved
+                            tushare_covered_codes = {it.get('code') for it in relevant_items}
+                            # 标记 processed
+                            for code in tushare_covered_codes:
+                                processed_codes_set.add(code)
+                            total_processed += len(tushare_covered_codes)
+                            if task:
+                                task.processed_stocks = total_processed
+                                task.total_records = total_saved
+                                task.saved_records = total_saved
+                                task.processed_codes = json.dumps(list(processed_codes_set))
+                                db_session.commit()
+                            logger.info(f"🚀 Tushare 快速路径完成: 覆盖 {len(tushare_covered_codes)} 只，"
+                                       f"baostock 还需补 {len(remaining_codes) - len(tushare_covered_codes)} 只")
+                        else:
+                            logger.warning(f"⚠️ Tushare 返回 {len(items)} 行但无任何在 remaining_codes 范围内")
+                    else:
+                        logger.warning(f"⚠️ Tushare 快速路径 HTTP {resp.status_code}，退回 baostock 全量")
+                except Exception as e:
+                    logger.warning(f"⚠️ Tushare 快速路径失败（不影响主流程，走 baostock）: {e}")
+
+                # 重新计算 remaining_codes 把 Tushare 覆盖的剔除
+                remaining_codes = [c for c in remaining_codes if c not in tushare_covered_codes]
+                logger.info(f"baostock 兜底处理剩余: {len(remaining_codes)} 只")
 
             # 批量保存：积累多只股票数据后再保存
             batch_data_list = []  # 积累多只股票的数据
@@ -599,6 +732,7 @@ class DataSyncService:
                     if task:
                         task.processed_stocks = total_processed
                         task.total_records = total_saved
+                        task.saved_records = total_saved  # 2026-05-26: running 时也实时同步（之前只在 stopped/completed 才更新）
 
                     # 断点续传：更新已处理的股票代码列表（每10个股票更新一次）
                     processed_codes_set.add(code)
@@ -613,8 +747,18 @@ class DataSyncService:
                             logger.info("任务已暂停，正在保存进度...")
                             break
 
-                    time.sleep(request_interval)
+                    # 2026-05-26: 去掉 time.sleep(request_interval=0.1) — baostock 服务端自身有限速
+                    # 本地 sleep 没意义，省 100ms/只 × 7100 只 = ~12 分钟
+                    # if request_interval > 0: time.sleep(request_interval)
 
+                except BaostockServiceUnavailable:
+                    # baostock 连续超时，整体中止任务并保留断点
+                    logger.error(f"Baostock 服务不可用，中止同步任务 (task_id={task_id})，已处理 {total_processed} 只")
+                    if task:
+                        task.processed_codes = json.dumps(list(processed_codes_set))
+                        task.processed_stocks = total_processed
+                        db_session.commit()
+                    raise
                 except Exception as e:
                     logger.error(f"获取 {code} 数据失败: {e}")
                     failed_codes.append(code)
@@ -658,7 +802,7 @@ class DataSyncService:
                         try:
                             # 确保每次重试前都检查登录状态
                             self.ensure_login()
-                            
+
                             data_list = self.get_kline_data(code, start_date, end_date, frequency)
                             if data_list:
                                 batch_data_list.extend(data_list)
@@ -666,6 +810,9 @@ class DataSyncService:
                                 logger.info(f"重试获取 {code} 成功: {len(data_list)} 条")
                             else:
                                 retry_failed.append(code)
+                        except BaostockServiceUnavailable:
+                            logger.error(f"Baostock 服务不可用，中止重试阶段")
+                            raise
                         except Exception as e:
                             logger.error(f"重试获取 {code} 失败: {e}")
                             retry_failed.append(code)

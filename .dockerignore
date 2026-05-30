@@ -1,0 +1,31 @@
+**/.git
+**/.DS_Store
+**/__pycache__
+**/*.pyc
+**/.venv
+**/venv
+**/node_modules
+
+# 后端运行产物
+backend/.scheduler_init.lock
+backend/.scheduler_initialized
+backend/*.log
+backend/logs
+backend/.env
+# 凭证：通过 docker-compose volume mount 注入，不打进镜像
+backend/.tgb_cookie
+backend/.tgb_credentials
+
+# 前端产物（会在容器内重新 build）
+frontend/dist
+frontend/.cache
+
+# 本地部署辅助文件
+uploads
+result_*.json
+# 只排根目录的 package-lock.json，保留 frontend/package-lock.json（npm install --frozen 需要）
+/package-lock.json
+
+# 项目自身的 docker 工件
+*.tar
+*.tar.gz

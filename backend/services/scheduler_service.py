@@ -38,8 +38,50 @@ class SchedulerService:
                 name='每日复盘任务',
                 replace_existing=True
             )
-            
-            logger.info("✅ 定时任务调度器初始化完成: 周一到周五18:00执行复盘任务")
+
+            # 每日 17:30 通过 AKShare 增量补充板块（行业 + 概念）+ 关联 + 新股
+            # 触发时间紧贴每日复盘 18:00 之前，让复盘能用上当天新增的板块/股票
+            # supplement_*_from_akshare 内部有断点续传判断，重复跑只补缺失部分，开销可控
+            metadata_trigger = CronTrigger(
+                day_of_week='0-4',
+                hour=17,
+                minute=30,
+            )
+            self.scheduler.add_job(
+                self.execute_akshare_metadata_supplement,
+                metadata_trigger,
+                id='akshare_metadata_supplement',
+                name='AKShare 元数据增量补充',
+                replace_existing=True,
+            )
+
+            # 每日 17:00（盘后 15 分钟内淘股吧热帖榜单已稳定）拉手机端热帖聚合
+            # 每 2 小时跑热帖（0/2/4/.../22 整点；不限工作日）
+            # 高频更新让"今日热帖"接近实时
+            tgb_hot_trigger = CronTrigger(hour='*/2', minute=0)
+            self.scheduler.add_job(
+                self.execute_tgb_hot_fetch,
+                tgb_hot_trigger,
+                id='tgb_hot_fetch',
+                name='淘股吧手机端热帖聚合',
+                replace_existing=True,
+            )
+
+            # 每 2 小时跑特别关注流（错开 5 分钟避免同 cookie 同时高频请求触发风控）
+            tgb_spefocus_trigger = CronTrigger(hour='*/2', minute=5)
+            self.scheduler.add_job(
+                self.execute_tgb_spefocus_fetch,
+                tgb_spefocus_trigger,
+                id='tgb_spefocus_fetch',
+                name='淘股吧特别关注流',
+                replace_existing=True,
+            )
+
+            logger.info(
+                "✅ 定时任务调度器初始化完成: "
+                "每 2 小时 :00 淘股吧热帖 / :05 特别关注 / "
+                "周一到周五 17:30 元数据补充 / 18:00 复盘"
+            )
         except ImportError:
             logger.warning("⚠️ APScheduler未安装，定时任务功能不可用")
             self.scheduler = None
@@ -74,7 +116,68 @@ class SchedulerService:
         except Exception as e:
             logger.error(f"❌ 定时任务执行失败: {e}")
             return {"success": False, "error": str(e)}
-    
+
+    def execute_akshare_metadata_supplement(self):
+        """通过 AKShare 增量补充板块（行业 + 概念）+ 关联。
+
+        断点续传：每个 supplement_*_from_akshare 内部会跳过 DB 已有的
+        板块且已有成分股关联的，开销随时间衰减。
+        """
+        logger.info("⏰ 定时任务触发: AKShare 元数据增量补充")
+        try:
+            from app import create_app
+            from extensions import db
+            from services.metadata_service import get_metadata_service
+
+            app = create_app()
+            with app.app_context():
+                svc = get_metadata_service()
+                logger.info("📥 [元数据补充] 开始: 行业板块 + 成分股")
+                industry = svc.supplement_industry_sectors_from_akshare(db.session)
+                logger.info(f"📥 [元数据补充] 行业完成: {industry}")
+                logger.info("📥 [元数据补充] 开始: 概念板块 + 成分股")
+                concept = svc.supplement_concept_sectors_from_akshare(db.session)
+                logger.info(f"📥 [元数据补充] 概念完成: {concept}")
+                logger.info(
+                    f"✅ AKShare 元数据增量补充全部完成: industry={industry}, concept={concept}"
+                )
+                return {"success": True, "industry": industry, "concept": concept}
+        except Exception as e:
+            logger.error(f"❌ AKShare 元数据增量补充失败: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    def execute_tgb_hot_fetch(self):
+        """每日盘后拉淘股吧手机端热帖，聚合写入 external_analysis（source=tgb-mobile-hot）。"""
+        logger.info("⏰ 定时任务触发: 淘股吧手机端热帖聚合")
+        try:
+            from app import create_app
+            from services.tgb_hot_service import run_daily
+
+            app = create_app()
+            with app.app_context():
+                result = run_daily(pages=5, dry_run=False)
+                logger.info(f"✅ 淘股吧热帖聚合完成: {result}")
+                return result
+        except Exception as e:
+            logger.error(f"❌ 淘股吧热帖聚合失败: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    def execute_tgb_spefocus_fetch(self):
+        """每日拉淘股吧特别关注流，写入 external_analysis（source=tgb-special-focus）。"""
+        logger.info("⏰ 定时任务触发: 淘股吧特别关注流")
+        try:
+            from app import create_app
+            from services.tgb_spefocus_service import run_daily
+
+            app = create_app()
+            with app.app_context():
+                result = run_daily(pages=5, dry_run=False)
+                logger.info(f"✅ 淘股吧特别关注流完成: {result}")
+                return result
+        except Exception as e:
+            logger.error(f"❌ 淘股吧特别关注流失败: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
     def _execute_review_logic(self, app):
         """执行复盘逻辑"""
         with app.app_context():
@@ -153,7 +256,9 @@ class SchedulerService:
             
             # 创建新的复盘任务
             task = ReviewTask()
-            task.task_name = f"{today} 日复盘"
+            # task_name 末尾的 [定时] 是给 review_service 完成钩子识别用的：
+            # 只有带此标记的复盘才会自动发邮件，手动重跑不自动发（手动可在报告页点按钮发）
+            task.task_name = f"{today} 日复盘 [定时]"
             task.trade_date = today
             task.review_type = 'daily'
             task.data_source_type = 'baostock'
@@ -168,11 +273,15 @@ class SchedulerService:
             try:
                 service = ReviewTaskService()
                 service.execute_baostock_task(task.id)
-                
+
                 # 重新查询任务状态
                 db.session.refresh(task)
                 logger.info(f"✅ 复盘任务执行完成: ID={task.id}, 状态={task.status}")
-                
+
+                # 2026-05-27: TA-CN 触发已下沉到 review_service 的「复盘完成」处统一处理，
+                # 覆盖定时/手动重跑/异步回调所有入口。此处不再触发，避免重复 + 漏触发。
+                # （原 bug：异步复盘时此处 status 还不是 completed，触发被过早跳过）
+
                 return {
                     "success": True,
                     "message": f"复盘任务执行完成",
@@ -192,6 +301,36 @@ class SchedulerService:
                     "is_trading_day": True
                 }
     
+    def _trigger_tacn_batch_analysis(self):
+        """复盘成功后 HTTP 触发 TA-CN 全市场综合分析。
+
+        非阻塞（5s timeout）— TA-CN 提交即返回 task_id，分析在后台跑。
+        失败只 log warning，不影响 daydayUp 复盘成功状态。
+        """
+        import os
+        import requests
+        tacn_base = os.getenv('TACN_API_BASE', 'http://tradingagents-backend:8000')
+        token = os.getenv('INTERNAL_TRIGGER_TOKEN', '')
+        try:
+            resp = requests.post(
+                f'{tacn_base}/api/analysis/index/batch/internal/trigger',
+                json={'date': None, 'model': 'deepseek-v4-pro'},
+                headers={'X-Internal-Token': token} if token else {},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                body = resp.json()
+                logger.info(
+                    f"🌐 已触发 TA-CN 全市场综合分析 task_id={body.get('task_id')} "
+                    f"(后台跑 LLM ~30-60s)"
+                )
+            else:
+                logger.warning(
+                    f"⚠️ TA-CN 触发返回 HTTP {resp.status_code}: {resp.text[:200]}"
+                )
+        except requests.RequestException as e:
+            logger.warning(f"⚠️ TA-CN 触发失败（不影响复盘）: {e}")
+
     def get_jobs(self):
         """获取所有定时任务"""
         if not self.scheduler:

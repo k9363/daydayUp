@@ -250,20 +250,32 @@ def get_stock_info(stock_code):
 
 @metadata_bp.route('/stock/list', methods=['GET'])
 def list_stocks():
-    """获取股票列表"""
+    """获取股票列表
+
+    Query params:
+        page / pageSize
+        industry / market: 精确过滤
+        keyword: 模糊搜索 stock_code OR stock_name（用于前端搜索式下拉）
+    """
     try:
         page = request.args.get('page', 1, type=int)
         page_size = request.args.get('pageSize', 20, type=int)
         industry = request.args.get('industry')
         market = request.args.get('market')
-        
+        keyword = (request.args.get('keyword') or '').strip()
+
         query = StockBasic.query
-        
+
         if industry:
             query = query.filter(StockBasic.industry == industry)
         if market:
             query = query.filter(StockBasic.market == market)
-        
+        if keyword:
+            query = query.filter(db.or_(
+                StockBasic.stock_code.like(f'%{keyword}%'),
+                StockBasic.stock_name.like(f'%{keyword}%'),
+            ))
+
         total = query.count()
         stocks = query.order_by(StockBasic.stock_code).offset(
             (page - 1) * page_size
@@ -317,6 +329,115 @@ def list_sectors():
         
     except Exception as e:
         logger.exception("获取板块列表失败")
+        return jsonify({'code': 500, 'message': str(e)}), 500
+
+
+@metadata_bp.route('/sectors/<sector_code>/stocks', methods=['POST'])
+def add_stocks_to_sector(sector_code):
+    """手动给指定板块批量添加成分股关联。
+
+    Body:
+        {"stock_codes": ["sh.600000", "sz.000001", "600000", ...]}
+
+    支持 stock_code 多种格式（自动 normalize 为带前缀 sh./sz./bj. 6 位）。
+
+    Returns:
+        {code: 200, data: {sector_code, added: N, skipped_exists: M, skipped_invalid: K, invalid_codes: [...]}}
+    """
+    try:
+        from models.stockbasic import StockBasic
+        from models.kline import StockSector, StockSectorRelation
+
+        payload = request.get_json() or {}
+        raw_codes = payload.get('stock_codes') or []
+        if not isinstance(raw_codes, list) or not raw_codes:
+            return jsonify({'code': 400, 'message': 'stock_codes 必须是非空列表'}), 400
+
+        sector = StockSector.query.filter(StockSector.sector_code == sector_code).first()
+        if not sector:
+            return jsonify({'code': 404, 'message': f'板块 {sector_code} 不存在'}), 404
+
+        def _normalize(code: str) -> str:
+            """各种格式 → daydayUp 标准格式 sh.600000"""
+            s = str(code or '').strip().lower()
+            if s.startswith(('sh.', 'sz.', 'bj.')):
+                return s
+            digits = ''.join(c for c in s if c.isdigit())
+            if len(digits) < 6:
+                return ''
+            digits = digits[:6]
+            if digits.startswith(('6', '9')):
+                return f'sh.{digits}'
+            if digits.startswith(('0', '2', '3')):
+                return f'sz.{digits}'
+            if digits.startswith(('4', '8')):
+                return f'bj.{digits}'
+            return ''
+
+        normalized = []
+        invalid: list = []
+        for c in raw_codes:
+            n = _normalize(c)
+            if n:
+                normalized.append(n)
+            else:
+                invalid.append(c)
+
+        if not normalized:
+            return jsonify({'code': 400, 'message': '没有有效的股票代码', 'data': {'invalid_codes': invalid}}), 400
+
+        # 校验 stock 是否存在
+        existing_stocks = set(
+            s[0] for s in db.session.query(StockBasic.stock_code).filter(
+                StockBasic.stock_code.in_(normalized)
+            ).all()
+        )
+        unknown_codes = [c for c in normalized if c not in existing_stocks]
+        valid_codes = [c for c in normalized if c in existing_stocks]
+
+        # 查已有关联
+        existing_relations = set(
+            r[0] for r in db.session.query(StockSectorRelation.stock_code).filter(
+                StockSectorRelation.sector_id == sector.id,
+                StockSectorRelation.stock_code.in_(valid_codes),
+            ).all()
+        )
+
+        # 批量插入
+        added = 0
+        for code in valid_codes:
+            if code in existing_relations:
+                continue
+            rel = StockSectorRelation(sector_id=sector.id, stock_code=code)
+            db.session.add(rel)
+            added += 1
+        if added > 0:
+            db.session.commit()
+            # 更新板块的 stock_count
+            new_count = db.session.query(StockSectorRelation).filter(
+                StockSectorRelation.sector_id == sector.id
+            ).count()
+            sector.stock_count = new_count
+            db.session.commit()
+
+        return jsonify({
+            'code': 200,
+            'message': f'添加 {added} 只成分股',
+            'data': {
+                'sector_code': sector_code,
+                'sector_name': sector.sector_name,
+                'added': added,
+                'skipped_exists': len(existing_relations),
+                'skipped_invalid_format': len(invalid),
+                'skipped_unknown_stock': len(unknown_codes),
+                'invalid_format_codes': invalid,
+                'unknown_codes': unknown_codes,
+                'new_stock_count': sector.stock_count,
+            }
+        })
+    except Exception as e:
+        db.session.rollback()
+        logger.exception(f"批量添加板块成分股失败 sector_code={sector_code}")
         return jsonify({'code': 500, 'message': str(e)}), 500
 
 
@@ -1278,8 +1399,33 @@ def import_delivery():
                     skipped_no_deal_no += 1
                     continue
 
-                # 过滤：证券名称以 GC 或 R 开头（国债逆回购、融资融券等）
-                if security_name.startswith('GC') or security_name.startswith('R'):
+                # 过滤：只保留真实股票买卖（证券买入 / 证券卖出），跳过：
+                # - 国债逆回购（质押回购拆出 / 拆出质押购回 / 担保品划入 等）
+                # - 申购配号 / 新股申购 / 红股入账 / 股息入账 / 配股转股 等
+                # - 担保品 / 货币基金 等
+                if operation not in ('证券买入', '证券卖出'):
+                    skipped_gc_or_r += 1  # 复用统计字段（前端显示"跳过非交易"）
+                    continue
+
+                # 过滤：证券名称以 GC / R 开头（半角 + 全角都兼容），含国债逆回购等
+                # 全角 Ｒ (U+FF32) / ＧＣ — 之前的 startswith('R') 漏判
+                import unicodedata
+                name_normalized = unicodedata.normalize('NFKC', security_name)
+                if name_normalized.startswith('GC') or name_normalized.startswith('R'):
+                    skipped_gc_or_r += 1
+                    continue
+
+                # 过滤：新股临时代码（"C惠康科技" / "N 中信" 等首字母为 C/N + 中文名）
+                # 这些是上市首日的临时显示名，几天后会改回正式股名
+                # 但 C/N 后面要紧跟中文（否则会误伤"CMOS光感"之类的正常股）
+                if len(security_name) >= 2 and security_name[0] in ('C', 'N', 'Ｃ', 'Ｎ'):
+                    second_char = security_name[1]
+                    if '一' <= second_char <= '鿿':  # 中文字符
+                        skipped_gc_or_r += 1
+                        continue
+
+                # 过滤：配号类（"长进配号" / "嘉德配号"）
+                if '配号' in security_name:
                     skipped_gc_or_r += 1
                     continue
 
@@ -1288,8 +1434,30 @@ def import_delivery():
                     skipped_duplicate += 1
                     continue
 
-                def safe_num(v): return float(v) if v and v.strip() else None
-                def safe_int(v): return int(float(v)) if v and v.strip() else None
+                def safe_num(v):
+                    """容错 float：空 / 非数字 / 异常都返回 None。
+                    ETF 和债券回购的 Excel 行列结构跟普通股不同，部分 float 列实际是
+                    '上海Ａ股' / '20260522' 等字符串，容错跳过即可。
+                    """
+                    if not v or not str(v).strip():
+                        return None
+                    try:
+                        f = float(str(v).strip())
+                        # 二次检查：transfer_fee/other_expense 等费用列若 > 1000000，
+                        # 大概率是误把 trade_date(YYYYMMDD) 当 fee 读到了，置 None
+                        if f > 1_000_000:
+                            return None
+                        return f
+                    except (ValueError, TypeError):
+                        return None
+
+                def safe_int(v):
+                    if not v or not str(v).strip():
+                        return None
+                    try:
+                        return int(float(str(v).strip()))
+                    except (ValueError, TypeError):
+                        return None
 
                 # 至少需要前7列：成交日期、成交时间、证券代码、证券名称、操作、成交数量、成交编号
                 if len(row) < 7:
@@ -1328,7 +1496,7 @@ def import_delivery():
 
             except Exception as e:
                 error_count += 1
-                logger.error(f"导入错误: {e}, row[:3]: {row[:3]}")
+                logger.error(f"导入错误: {e}, row[:3]: {row[:3]}, full row ({len(row)} cols): {row}")
                 continue
 
         db.session.commit()
@@ -1377,6 +1545,79 @@ def get_delivery_list():
         
     except Exception as e:
         logger.exception("获取交割单列表失败")
+        return jsonify({'code': 500, 'message': str(e)}), 500
+
+
+# 2026-05-30: 此处原有一个重复的 delivery_stocks() 路由（同为 /delivery/stocks），
+# 因先注册而遮蔽了下方功能完整的 get_delivery_stocks()；它不返回 profit / latest_date，
+# 导致前端「获利」列恒为 0、按最近日期排序失效。已删除，统一由下方 get_delivery_stocks() 提供。
+
+
+@metadata_bp.route('/delivery/query', methods=['GET'])
+def query_delivery():
+    """按日期范围 + 可选股票代码过滤的交割单查询。
+
+    Query params:
+        start_date: YYYYMMDD（可选；与 security_code 至少传一个）
+        end_date:   YYYYMMDD（可选；如传了 start_date 则必须配套）
+        security_code: 可选股票代码（任意格式：6位、带前缀、带后缀都兼容）
+
+    Returns:
+        {code: 200, data: {items: [...], total: N, start_date, end_date, security_code}}
+
+    所有匹配记录都返回（不分页），调用方负责筛选/聚合。
+    """
+    try:
+        start_date = (request.args.get('start_date') or '').strip()
+        end_date = (request.args.get('end_date') or '').strip()
+        security_code = (request.args.get('security_code') or '').strip()
+
+        # 至少需要一个过滤条件，否则返回所有可能 5000+ 笔，避免误拉全表
+        if not start_date and not end_date and not security_code:
+            return jsonify({
+                'code': 400,
+                'message': 'start_date+end_date 与 security_code 至少传一个'
+            }), 400
+
+        # 日期：如果传了任一就要两个都传 + 格式正确
+        if start_date or end_date:
+            start_date = start_date.replace('-', '')
+            end_date = end_date.replace('-', '')
+            if not (start_date and end_date):
+                return jsonify({'code': 400, 'message': 'start_date 和 end_date 必须配套传'}), 400
+            if not (start_date.isdigit() and end_date.isdigit()
+                    and len(start_date) == 8 and len(end_date) == 8):
+                return jsonify({'code': 400, 'message': '日期格式必须是 YYYYMMDD 或 YYYY-MM-DD'}), 400
+
+        query = StockDelivery.query
+        if start_date and end_date:
+            query = query.filter(
+                StockDelivery.trade_date >= start_date,
+                StockDelivery.trade_date <= end_date,
+            )
+        if security_code:
+            digits = ''.join(c for c in security_code if c.isdigit())
+            if digits:
+                query = query.filter(StockDelivery.security_code.like(f'%{digits}%'))
+
+        items = query.order_by(
+            StockDelivery.trade_date.asc(),
+            StockDelivery.trade_time.asc(),
+        ).all()
+
+        return jsonify({
+            'code': 200,
+            'message': '操作成功',
+            'data': {
+                'items': [d.to_dict() for d in items],
+                'total': len(items),
+                'start_date': start_date,
+                'end_date': end_date,
+                'security_code': security_code or None,
+            }
+        })
+    except Exception as e:
+        logger.exception('查询交割单失败')
         return jsonify({'code': 500, 'message': str(e)}), 500
 
 

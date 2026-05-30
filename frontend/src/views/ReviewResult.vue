@@ -7,6 +7,10 @@
           <span class="page-title">复盘分析结果</span>
         </template>
         <template #extra>
+          <el-button :loading="sendingEmail" :disabled="!taskId" @click="sendEmail">
+            <el-icon><Message /></el-icon>
+            发送邮件
+          </el-button>
           <el-button type="primary" @click="refreshData">
             <el-icon><Refresh /></el-icon>
             刷新
@@ -87,7 +91,11 @@
             </template>
             <el-table :data="indexData" stripe size="small" style="width: 100%">
               <el-table-column prop="name" label="指数名称" min-width="90" />
-              <el-table-column prop="code" label="代码" min-width="80" />
+              <el-table-column label="代码" min-width="80">
+                <template #default="{ row }">
+                  <StockCodeLink :code="row.code" />
+                </template>
+              </el-table-column>
               <el-table-column label="收盘价" min-width="80" align="right">
                 <template #default="{ row }">
                   {{ row.close.toFixed(2) }}
@@ -127,7 +135,11 @@
         </template>
         <el-table :data="top10FactorStocks" stripe>
           <el-table-column type="index" label="排名" width="60" align="center" />
-          <el-table-column prop="code" label="代码" width="90" />
+          <el-table-column label="代码" width="100">
+            <template #default="{ row }">
+              <StockCodeLink :code="row.code" />
+            </template>
+          </el-table-column>
           <el-table-column prop="name" label="名称" width="80" />
           <el-table-column label="成交额(亿)" width="90" align="right">
             <template #default="{ row }">
@@ -176,9 +188,25 @@
         </el-table>
       </el-card>
 
+      <!-- 当日全市场综合分析（TA-CN 工作日 18:45 自动 cron + 手动可补；2026-05-24 新增）-->
+      <!-- 用 useReviewData 暴露的 tradeDate（兼容 chartData 为 array / object 两种格式）-->
+      <BatchMarketSummary :trade-date="tradeDate" />
+
+      <!-- 淘股吧手机端热帖聚合（每日 17:00 cron 拉 m.tgb.cn/getMZh 聚合 Top10）-->
+      <TgbHotPostsSummary :trade-date="tradeDate" />
+
+      <!-- 淘股吧特别关注流（每日 17:05 cron 拉 spefocus/friendActions 时间线）-->
+      <TgbSpecialFocusSummary :trade-date="tradeDate" />
+
+      <!-- AI 多代理分析报告（TradingAgents-CN 推送） -->
+      <ExternalAnalysisPanel
+        :stock-codes="top10FactorStocks.map(s => s.code)"
+        :name-lookup="top10NameLookup"
+      />
+
       <!-- 因子树详情对话框 - 树形结构展示 -->
-      <el-dialog 
-        v-model="showFactorTreeDialog" 
+      <el-dialog
+        v-model="showFactorTreeDialog"
         :title="currentStock ? `${currentStock.name} (${currentStock.code}) 因子得分详情` : '因子体系'"
         width="900px"
         destroy-on-close
@@ -330,7 +358,11 @@
         </template>
         <el-table :data="top100Detail" stripe style="width: 100%" max-height="500" :row-class-name="getRowClass">
           <el-table-column type="index" label="排名" width="80" align="center" />
-          <el-table-column prop="code" label="代码" width="100" />
+          <el-table-column label="代码" width="110">
+            <template #default="{ row }">
+              <StockCodeLink :code="row.code" />
+            </template>
+          </el-table-column>
           <el-table-column prop="name" label="名称" width="120" />
           <el-table-column prop="sector" label="所属板块" width="180" />
           <el-table-column prop="industry" label="所属行业" width="120" />
@@ -503,7 +535,7 @@
 <script setup>
 import { ref, onMounted, computed, nextTick, watch, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, Grid, Monitor, Connection, Trophy, DocumentChecked, Edit, Delete, Check, Close } from '@element-plus/icons-vue'
+import { Refresh, Grid, Monitor, Connection, Trophy, DocumentChecked, Edit, Delete, Check, Close, Message } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
 import { getSectorStocks, getAllSectors, getStockSectors, getBatchStockSectors, addStockToSector, removeStockFromSector, getTags, addTag, updateTag, deleteTag, addStockTag, removeStockTag, getBatchStockTags, saveDailyNote, getCycleByDate } from '@/api'
@@ -514,6 +546,11 @@ import CycleInfoCard from './components/review/CycleInfoCard.vue'
 import NoteEditor from './components/review/NoteEditor.vue'
 import MarketOverview from './components/review/MarketOverview.vue'
 import Top10FactorStocks from './components/review/Top10FactorStocks.vue'
+import ExternalAnalysisPanel from './components/review/ExternalAnalysisPanel.vue'
+import BatchMarketSummary from './components/review/BatchMarketSummary.vue'
+import TgbHotPostsSummary from './components/review/TgbHotPostsSummary.vue'
+import TgbSpecialFocusSummary from './components/review/TgbSpecialFocusSummary.vue'
+import StockCodeLink from '@/components/StockCodeLink.vue'
 import SectorAnalysis from './components/review/SectorAnalysis.vue'
 
 const route = useRoute()
@@ -561,6 +598,18 @@ const {
   marketKeyFactors,
   tradeDate
 } = useReviewData(chartData)
+
+// Top10 stock_code → name 查表，供 ExternalAnalysisPanel 用
+const top10NameLookup = computed(() => {
+  const map = {}
+  for (const s of top10FactorStocks.value || []) {
+    if (!s || !s.code) continue
+    const raw = String(s.code)
+    const six = raw.includes('.') ? raw.split('.').pop() : raw
+    map[six] = s.name
+  }
+  return map
+})
 
 // 过滤后的板块列表
 const filteredSectors = computed(() => {
@@ -920,6 +969,40 @@ const refreshData = () => {
   fetchChartData()
 }
 
+// 发送复盘邮件（手动触发；定时任务复盘会自动发，这里只处理手动 & 重发场景）
+const sendingEmail = ref(false)
+const sendEmail = async () => {
+  if (!taskId) { ElMessage.warning('未识别到复盘任务 ID'); return }
+  try {
+    await ElMessageBox.confirm(
+      '确认将本次复盘报告发送到默认收件人邮箱?（收件人在后端 EMAIL_REVIEW_RECIPIENTS 配置）',
+      '发送复盘邮件',
+      { confirmButtonText: '发送', cancelButtonText: '取消', type: 'info' }
+    )
+  } catch { return /* 用户取消 */ }
+  sendingEmail.value = true
+  try {
+    const r = await fetch(`/api/email/send-review/${taskId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    const j = await r.json().catch(() => ({}))
+    const ok = r.ok && (j.code === 200 || j?.data?.success)
+    if (ok) {
+      const to = (j?.data?.recipients || []).join(', ')
+      ElMessage.success(`邮件已发送${to ? ' → ' + to : ''}`)
+    } else {
+      const err = j?.data?.error || j?.message || `HTTP ${r.status}`
+      ElMessage.error(`发送失败: ${err}`)
+    }
+  } catch (e) {
+    ElMessage.error('发送失败: ' + (e?.message || e))
+  } finally {
+    sendingEmail.value = false
+  }
+}
+
 // 点击查看板块成分股
 const handleShowSectorStocks = async (row) => {
   console.log('点击板块股票数量, row:', row)
@@ -983,12 +1066,14 @@ const formatAmount = (value) => {
   return `${parseFloat(value).toFixed(2)}亿`
 }
 
-/** 指数行情：turnover 多为原始元，除一亿后展示 */
+/** 指数行情：后端 review_service.py 已把 turnover 除 1e8 转为亿元，前端不再换算
+ *  2026-05-26 修复双重换算 bug（14616.85 亿 / 1e8 = 0.00 显示为 0.00）
+ */
 const formatIndexTurnoverYi = (value) => {
   if (value === null || value === undefined || value === '') return '-'
   const n = Number(value)
   if (Number.isNaN(n)) return '-'
-  return `${(n / 100000000).toFixed(2)}`
+  return `${n.toFixed(2)}`
 }
 
 // 格式化市值（直接是元，转为亿/万亿显示）

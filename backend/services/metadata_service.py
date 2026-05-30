@@ -572,10 +572,11 @@ class MetadataService:
         if db_session is None:
             db_session = db.session
         
+        # 按进入板块时间倒序（最近加入的板块优先 — 通常反映股票最新的题材定位）
         relations = db_session.query(StockSectorRelation).filter(
             StockSectorRelation.stock_code == stock_code
-        ).all()
-        
+        ).order_by(StockSectorRelation.create_time.desc()).all()
+
         return [r.to_dict() for r in relations]
 
     def update_sector_stock_count(self, sector_id, db_session=None):

@@ -18,6 +18,8 @@ from routes.factor import factor_bp
 from routes.expression import expression_bp
 from routes.cycle import cycle_bp
 from routes.note import note_bp
+from routes.external import external_bp
+from routes.email import email_bp
 from utils.error_handlers import register_error_handlers
 
 # 配置根日志（gunicorn 会覆盖，但为 fallback 保留）
@@ -117,6 +119,8 @@ def create_app(config_name=None):
     app.register_blueprint(expression_bp, url_prefix='/api/expression')
     app.register_blueprint(cycle_bp, url_prefix='/api/cycle')
     app.register_blueprint(note_bp, url_prefix='/api/note')
+    app.register_blueprint(external_bp, url_prefix='/api/external')
+    app.register_blueprint(email_bp, url_prefix='/api/email')
 
     # 启动时登录 Baostock
     _init_baostock_login()
@@ -151,32 +155,54 @@ _scheduler_flag_file = os.path.join(
 )
 
 
+def _get_proc_starttime(pid):
+    """读 /proc/<pid>/stat 第 22 字段拿进程启动时间（jiffies）。无法读取返回 None。"""
+    try:
+        with open(f"/proc/{pid}/stat", "r") as f:
+            return f.read().split()[21]
+    except Exception:
+        return None
+
+
 def init_scheduler(app, force=False):
     """初始化定时任务调度器"""
     global _scheduler_service, _scheduler_initialized
 
     # 快速检查：先检查标记文件是否存在
     if os.path.exists(_scheduler_flag_file) and not force:
-        # 检查标记文件中的进程是否还在运行
+        # 标记文件格式：pid 或 pid:starttime（2026-05-26 后加 starttime 防 PID 复用）
         try:
             with open(_scheduler_flag_file, 'r') as f:
-                saved_pid = int(f.read().strip())
-            # 检查进程是否存活
+                content = f.read().strip()
+            if ":" in content:
+                saved_pid_str, saved_starttime = content.split(":", 1)
+            else:
+                saved_pid_str, saved_starttime = content, None
+            saved_pid = int(saved_pid_str)
+            stale = False
             if saved_pid > 0:
                 try:
                     os.kill(saved_pid, 0)  # 信号0检查进程是否存在
-                    # 进程存在，跳过初始化
-                    app.logger.info("⏭️ 定时任务调度器已跳过初始化（标记文件存在，进程存活）")
-                    _scheduler_initialized = True
-                    return
+                    # 进程存活 — 进一步校验 starttime 防 docker restart 后 PID 复用
+                    if saved_starttime:
+                        current_starttime = _get_proc_starttime(saved_pid)
+                        if current_starttime and current_starttime != saved_starttime:
+                            stale = True
+                            app.logger.info("⏭️ PID 复用（同 PID 不同进程），标记文件 stale，重新初始化")
+                    if not stale:
+                        app.logger.info("⏭️ 定时任务调度器已跳过初始化（标记文件存在，进程存活）")
+                        _scheduler_initialized = True
+                        return
                 except OSError:
-                    # 进程不存在，需要重新初始化
-                    app.logger.info("⏭️ 标记文件中的进程已死亡，删除标记文件并重新初始化")
-                    try:
-                        os.remove(_scheduler_flag_file)
-                    except:
-                        pass
-        except:
+                    # 进程不存在
+                    stale = True
+                    app.logger.info("⏭️ 标记文件中的进程已死亡，重新初始化")
+            if stale:
+                try:
+                    os.remove(_scheduler_flag_file)
+                except Exception:
+                    pass
+        except Exception:
             pass
 
     # 防止重复初始化（进程内检查）
@@ -208,9 +234,11 @@ def init_scheduler(app, force=False):
         _scheduler_service.start()
         _scheduler_initialized = True
 
-        # 创建标记文件
+        # 创建标记文件：pid:starttime（starttime 防 docker restart 后 PID 复用导致 stale lock）
+        my_pid = os.getpid()
+        my_starttime = _get_proc_starttime(my_pid) or ""
         with open(_scheduler_flag_file, 'w') as f:
-            f.write(str(os.getpid()))
+            f.write(f"{my_pid}:{my_starttime}")
 
         app.logger.info("✅ 定时任务调度器已初始化")
 

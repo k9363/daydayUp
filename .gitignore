@@ -34,6 +34,10 @@ dist/
 .env
 .env.local
 .env.*.local
+backend/.tgb_cookie
+backend/.tgb_credentials
+backend/.scheduler_init.lock
+backend/.scheduler_initialized
 
 # IDE
 .idea/

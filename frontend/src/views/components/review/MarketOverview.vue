@@ -118,9 +118,12 @@ const isTurnoverFactor = (code, factorName) => {
 }
 
 const formatTurnover = (value) => {
+  // 2026-05-26: 后端 review_service.py 在 detail_data.indexes 中已把 turnover 除 1e8 转为亿元
+  //   前端再除 1e8 → 14616.85 亿 / 1e8 = 0.00（双重换算 bug）
+  //   修复：前端不再换算，直接展示
   if (!value) return '0.00'
   const num = Number(value)
-  return (num / 100000000).toFixed(2)
+  return num.toFixed(2)
 }
 
 // 关键因子：展示 factor_name，排除综合得分；成交额因子除一亿

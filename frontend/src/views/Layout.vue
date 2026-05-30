@@ -103,6 +103,14 @@
           </el-menu-item>
         </el-sub-menu>
       </el-menu>
+
+      <!-- 跳转到 TradingAgents-CN（AI 分析系统，与本服务同机部署，端口 3000） -->
+      <div class="sidebar-ext">
+        <el-button text class="ext-link-btn" @click="goTaCn">
+          <el-icon><DataLine /></el-icon>
+          <span v-show="!isCollapsed">AI 分析系统</span>
+        </el-button>
+      </div>
     </el-aside>
     
     <!-- 主内容区 -->
@@ -144,6 +152,13 @@ watch(isCollapsed, (val) => {
 const asideWidth = computed(() => (isCollapsed.value ? '64px' : '240px'))
 const toggleCollapse = () => {
   isCollapsed.value = !isCollapsed.value
+}
+
+function goTaCn() {
+  // 跳转到 TradingAgents-CN（AI 分析系统，与本服务同机部署，端口 3000）。
+  // 用当前访问主机名拼接，从任意入口（内网 IP / localhost）访问都能跳对，避免硬编码 IP。
+  const url = `http://${window.location.hostname}:3000/`
+  window.open(url, '_blank', 'noopener')
 }
 </script>
 
@@ -231,6 +246,26 @@ const toggleCollapse = () => {
 .sidebar-menu .el-sub-menu__title {
   height: 48px;
   line-height: 48px;
+}
+
+.sidebar-ext {
+  padding: 8px 12px;
+  border-top: 1px solid #ebeef5;
+}
+.ext-link-btn {
+  width: 100%;
+  justify-content: flex-start;
+  color: #409EFF;
+  font-weight: 500;
+}
+.ext-link-btn .el-icon {
+  margin-right: 6px;
+}
+.layout-container.is-collapsed .ext-link-btn {
+  justify-content: center;
+}
+.layout-container.is-collapsed .ext-link-btn .el-icon {
+  margin-right: 0;
 }
 
 .main-content {

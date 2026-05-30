@@ -311,7 +311,33 @@ class DataSyncTask(db.Model):
         db.Index('idx_sync_dates', 'start_date', 'end_date'),
     )
 
-    def to_dict(self):
+    def to_dict(self, light=False):
+        # light=True（列表视图）：① 不返回大字段 processed_codes（每行约 70KB 的全代码 JSON，
+        #   50 行就 ~4.5MB 拖垮 /sync 页面）；② 仅对 running 任务做实时 COUNT(*)，
+        #   否则 50 个任务各跑一次 over 140 万行的 COUNT(*) 会严重拖慢列表接口。
+        #
+        # 2026-05-26: saved_records 动态从 MySQL count（累加器在 running 状态不更新会偏小）；
+        #   已完成任务的 saved_records 已是终值，无需再实时 count。
+        live_saved = None
+        need_live_count = (not light) or (self.status == 'running')
+        if need_live_count:
+            try:
+                from extensions import db
+                from sqlalchemy import text
+                table_map = {
+                    'daily': 'stock_daily_kline',
+                    'weekly': 'stock_weekly_kline',
+                    'monthly': 'stock_monthly_kline',
+                }
+                table = table_map.get(self.frequency)
+                if table and self.start_date and self.end_date:
+                    r = db.session.execute(
+                        text(f"SELECT COUNT(*) FROM {table} WHERE trade_date >= :sd AND trade_date <= :ed"),
+                        {"sd": self.start_date, "ed": self.end_date}
+                    ).scalar()
+                    live_saved = int(r) if r is not None else None
+            except Exception:
+                live_saved = None
         return {
             'id': self.id,
             'task_name': self.task_name,
@@ -323,9 +349,11 @@ class DataSyncTask(db.Model):
             'total_stocks': self.total_stocks,
             'processed_stocks': self.processed_stocks,
             'total_records': self.total_records,
-            'saved_records': self.saved_records,
+            # 优先用 MySQL 实时 count（永远准），count 失败/light 跳过则 fallback 累加字段
+            'saved_records': live_saved if live_saved is not None else self.saved_records,
             'error_message': self.error_message,
-            'processed_codes': self.processed_codes,
+            # 列表视图不返回大字段，详情视图（light=False）才带
+            'processed_codes': None if light else self.processed_codes,
             'progress': round(self.processed_stocks / self.total_stocks * 100, 2) if self.total_stocks > 0 else 0,
             'start_time': self.start_time.strftime('%Y-%m-%d %H:%M:%S') if self.start_time else None,
             'end_time': self.end_time.strftime('%Y-%m-%d %H:%M:%S') if self.end_time else None,

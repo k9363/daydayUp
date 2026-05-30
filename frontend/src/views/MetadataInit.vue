@@ -142,7 +142,11 @@
       </template>
 
       <el-table :data="stockList" v-loading="stockListLoading" stripe max-height="500" style="width: 100%">
-        <el-table-column prop="stock_code" label="股票代码" width="100" />
+        <el-table-column label="股票代码" width="110">
+          <template #default="{ row }">
+            <StockCodeLink :code="row.stock_code" />
+          </template>
+        </el-table-column>
         <el-table-column prop="stock_name" label="股票名称" min-width="100" />
         <el-table-column prop="market" label="市场/类型" width="100">
           <template #default="{ row }">
@@ -380,10 +384,22 @@
           搜索
         </el-button>
         <span class="stocks-count">共 {{ sectorStocksTotal }} 只成分股</span>
+        <el-button
+          type="success"
+          size="small"
+          style="margin-left: auto"
+          @click="openBatchAddDialog"
+        >
+          + 批量添加成分股
+        </el-button>
       </div>
       
       <el-table :data="sectorStocks" v-loading="stocksLoading" height="calc(100vh - 500px)" style="width: 100%">
-        <el-table-column prop="stock_code" label="股票代码" width="120" />
+        <el-table-column label="股票代码" width="130">
+          <template #default="{ row }">
+            <StockCodeLink :code="row.stock_code" />
+          </template>
+        </el-table-column>
         <el-table-column prop="stock_name" label="股票名称" min-width="150" />
         <el-table-column prop="market" label="市场" width="80">
           <template #default="{ row }">
@@ -421,6 +437,70 @@
           @current-change="handleSectorStocksPageChange"
         />
       </div>
+    </el-dialog>
+
+    <!-- 批量添加成分股子弹窗 -->
+    <el-dialog
+      v-model="showBatchAddDialog"
+      :title="'批量添加成分股 - ' + (currentSector ? currentSector.sector_name : '')"
+      width="700px"
+      :close-on-click-modal="false"
+    >
+      <el-alert
+        title="支持多种输入方式"
+        type="info"
+        :closable="false"
+        style="margin-bottom: 12px"
+      >
+        <template #default>
+          <div style="font-size: 13px; line-height: 1.6">
+            <strong>方式 1 - 下拉多选</strong>：从已有股票列表里筛选选择（输入代码或名称搜索）<br>
+            <strong>方式 2 - 粘贴代码</strong>：在文本框粘贴 6 位代码（每行一个或逗号分隔），如 <code>600519,000858,300750</code>
+          </div>
+        </template>
+      </el-alert>
+
+      <el-form label-width="100px">
+        <el-form-item label="股票选择">
+          <el-select
+            v-model="batchAddSelected"
+            multiple
+            filterable
+            remote
+            reserve-keyword
+            placeholder="输入股票代码或名称搜索"
+            :remote-method="searchStocksForBatchAdd"
+            :loading="batchSearchLoading"
+            style="width: 100%"
+            collapse-tags
+            collapse-tags-tooltip
+            :max-collapse-tags="3"
+          >
+            <el-option
+              v-for="s in batchSearchOptions"
+              :key="s.stock_code"
+              :label="`${s.stock_code} ${s.stock_name}`"
+              :value="s.stock_code"
+            />
+          </el-select>
+        </el-form-item>
+
+        <el-form-item label="粘贴代码">
+          <el-input
+            v-model="batchAddRawText"
+            type="textarea"
+            :rows="3"
+            placeholder="600519, 000858, 300750  或一行一个代码"
+          />
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <el-button @click="showBatchAddDialog = false">取消</el-button>
+        <el-button type="primary" :loading="batchAddSubmitting" @click="submitBatchAdd">
+          确认添加（{{ batchAddTotalCount }} 只）
+        </el-button>
+      </template>
     </el-dialog>
 
     <!-- 选择板块弹窗 -->
@@ -612,10 +692,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '@/api/request'
 import { Document, Grid } from '@element-plus/icons-vue'
+import StockCodeLink from '@/components/StockCodeLink.vue'
 import {
   getMetadataSummary,
   initStockFromAKShare,
@@ -656,6 +737,85 @@ const sectorResult = ref(null)
 const sectorType = ref('')
 const sectorList = ref([])
 const sectorSearch = ref('')
+
+// 批量添加成分股
+const showBatchAddDialog = ref(false)
+const batchAddSelected = ref([])
+const batchAddRawText = ref('')
+const batchSearchOptions = ref([])
+const batchSearchLoading = ref(false)
+const batchAddSubmitting = ref(false)
+const batchAddTotalCount = computed(() => {
+  const fromText = batchAddRawText.value
+    .split(/[\s,，;；\n\r]+/)
+    .map(s => s.trim())
+    .filter(s => s.length >= 6)
+  const merged = new Set([...batchAddSelected.value, ...fromText])
+  return merged.size
+})
+
+const openBatchAddDialog = () => {
+  batchAddSelected.value = []
+  batchAddRawText.value = ''
+  batchSearchOptions.value = []
+  showBatchAddDialog.value = true
+}
+
+const searchStocksForBatchAdd = async (query) => {
+  if (!query || query.length < 2) {
+    batchSearchOptions.value = []
+    return
+  }
+  batchSearchLoading.value = true
+  try {
+    // daydayUp request 拦截器：200 直接 return ApiResponse(已 unwrap response.data)
+    // request 已配 baseURL=/api，路径不加 /api 前缀
+    const res = await request.get('/metadata/stock/list', {
+      params: { page: 1, pageSize: 30, keyword: query }
+    })
+    batchSearchOptions.value = res?.data?.items || res?.data?.list || res?.data || []
+  } catch (e) {
+    console.warn('搜索股票失败', e)
+  } finally {
+    batchSearchLoading.value = false
+  }
+}
+
+const submitBatchAdd = async () => {
+  if (!currentSector.value || !currentSector.value.sector_code) {
+    ElMessage.warning('未指定板块')
+    return
+  }
+  const fromText = batchAddRawText.value
+    .split(/[\s,，;；\n\r]+/)
+    .map(s => s.trim())
+    .filter(s => s.length >= 6)
+  const codes = Array.from(new Set([...batchAddSelected.value, ...fromText]))
+  if (codes.length === 0) {
+    ElMessage.warning('请至少选择/粘贴 1 只股票')
+    return
+  }
+  batchAddSubmitting.value = true
+  try {
+    const res = await request.post(
+      `/metadata/sectors/${encodeURIComponent(currentSector.value.sector_code)}/stocks`,
+      { stock_codes: codes }
+    )
+    // 拦截器 200 才会到这里，非 200 走 catch
+    const d = res?.data || {}
+    ElMessage.success(
+      `添加 ${d.added} 只 · 已存在 ${d.skipped_exists} · 格式错 ${d.skipped_invalid_format} · 未知股 ${d.skipped_unknown_stock}`
+    )
+    showBatchAddDialog.value = false
+    // 刷新成分股列表 + 主板块列表
+    loadSectorStocks()
+    loadSectors()
+  } catch (e) {
+    ElMessage.error(`添加失败: ${e?.response?.data?.message || e.message || e}`)
+  } finally {
+    batchAddSubmitting.value = false
+  }
+}
 
 // 成分股弹窗
 const showStockDialog = ref(false)
