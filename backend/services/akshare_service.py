@@ -866,7 +866,8 @@ class EastMoneyService:
             logger.error(f"AKShare 连接失败: {e}")
             return False
     
-    _EM_HOSTS = ('push2.eastmoney.com', '82.push2.eastmoney.com')
+    # push2delay(延迟行情域名)反爬比 push2 宽松，push2 被封时仍可用；板块/成分股是静态元数据，延迟域名无影响
+    _EM_HOSTS = ('push2delay.eastmoney.com', 'push2.eastmoney.com', '82.push2.eastmoney.com')
     _EM_HEADERS = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': 'https://quote.eastmoney.com/',
