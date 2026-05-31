@@ -200,6 +200,11 @@ export function getSectorStocks(sectorCode, params) {
   return request.get(`/metadata/sectors/${sectorCode}/stocks`, { params })
 }
 
+// 更新 股票-板块 关系的人工优先级（0-10）
+export function updateRelationPriority(data) {
+  return request.post('/metadata/relation/priority', data)
+}
+
 // 获取股票基本信息和板块（使用元数据接口）
 export function getStockBasicInfo(stockCode) {
   return request.get(`/metadata/stock/${stockCode}`)

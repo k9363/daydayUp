@@ -165,32 +165,38 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="total_market_value" label="总市值(亿)" width="120">
-          <template #default="{ row }">
-            {{ formatMarketValue(row.total_market_value) }}
-          </template>
-        </el-table-column>
-        <el-table-column prop="circulate_market_value" label="流通市值(亿)" width="120">
-          <template #default="{ row }">
-            {{ formatMarketValue(row.circulate_market_value) }}
-          </template>
-        </el-table-column>
-        <el-table-column label="所属板块" min-width="180">
+        <el-table-column label="所属板块" min-width="320">
           <template #default="{ row }">
             <div v-if="row.sectors && row.sectors.length > 0">
-              <el-tag
-                v-for="sector in row.sectors.slice(0, 3)"
+              <el-popover
+                v-for="sector in row.sectors"
                 :key="sector.sector_code"
-                :type="sectorTagType(sector.sector_type)"
-                size="small"
-                class="sector-tag clickable"
-                @click="handleSectorTagClick(sector)"
+                trigger="click"
+                :width="230"
+                placement="top"
               >
-                {{ sector.sector_name }}
-              </el-tag>
-              <el-tag v-if="row.sectors.length > 3" type="info" size="small">
-                +{{ row.sectors.length - 3 }}
-              </el-tag>
+                <template #reference>
+                  <el-tag
+                    :type="sectorTagType(sector.sector_type)"
+                    size="small"
+                    :effect="sector.priority > 0 ? 'dark' : 'light'"
+                    class="sector-tag clickable"
+                  >
+                    {{ sector.sector_name }}<template v-if="sector.priority > 0"> ·{{ sector.priority }}</template>
+                  </el-tag>
+                </template>
+                <div class="sector-pop">
+                  <div style="font-weight:600;margin-bottom:6px">{{ sector.sector_name }}</div>
+                  <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+                    <span>优先级</span>
+                    <el-select :model-value="sector.priority" size="small" style="width:80px"
+                               @change="(v) => updateSectorPriority(row, sector, v)">
+                      <el-option v-for="n in 11" :key="n - 1" :value="n - 1" :label="String(n - 1)" />
+                    </el-select>
+                  </div>
+                  <el-button size="small" type="primary" link @click="showSectorStocks(sector)">查看成分股</el-button>
+                </div>
+              </el-popover>
             </div>
             <el-tag v-else type="info" size="small" effect="plain">
               点击"选择板块"添加
@@ -419,16 +425,35 @@
         <el-table-column label="所属板块" min-width="200">
           <template #default="{ row }">
             <div v-if="row.sectors && row.sectors.length > 0">
-              <el-tag
+              <el-popover
                 v-for="sector in row.sectors"
                 :key="sector.sector_code"
-                :type="sectorTagType(sector.sector_type)"
-                size="small"
-                class="sector-tag clickable"
-                @click="handleSectorTagClick(sector)"
+                trigger="click"
+                :width="230"
+                placement="top"
               >
-                {{ sector.sector_name }}
-              </el-tag>
+                <template #reference>
+                  <el-tag
+                    :type="sectorTagType(sector.sector_type)"
+                    size="small"
+                    :effect="sector.priority > 0 ? 'dark' : 'light'"
+                    class="sector-tag clickable"
+                  >
+                    {{ sector.sector_name }}<template v-if="sector.priority > 0"> ·{{ sector.priority }}</template>
+                  </el-tag>
+                </template>
+                <div class="sector-pop">
+                  <div style="font-weight:600;margin-bottom:6px">{{ sector.sector_name }}</div>
+                  <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+                    <span>优先级</span>
+                    <el-select :model-value="sector.priority" size="small" style="width:80px"
+                               @change="(v) => updateSectorPriority(row, sector, v)">
+                      <el-option v-for="n in 11" :key="n - 1" :value="n - 1" :label="String(n - 1)" />
+                    </el-select>
+                  </div>
+                  <el-button size="small" type="primary" link @click="showSectorStocks(sector)">查看成分股</el-button>
+                </div>
+              </el-popover>
             </div>
             <span v-else class="no-sector">-</span>
           </template>
@@ -713,6 +738,7 @@ import {
   initIndustryFromAKShare,
   initConceptFromAKShare,
   getSectors,
+  updateRelationPriority,
   getSectorStocks,
   getStocks,
   getAllSectors,
@@ -1118,6 +1144,26 @@ const handleSectorStocksSizeChange = (size) => {
 // 点击板块标签查看成分股
 const handleSectorTagClick = (sector) => {
   showSectorStocks(sector)
+}
+
+// 设置 股票-板块 关系的人工优先级（0-10），设后本地按优先级重排
+const updateSectorPriority = async (row, sector, priority) => {
+  try {
+    const res = await updateRelationPriority({
+      stock_code: row.stock_code,
+      sector_code: sector.sector_code,
+      priority
+    })
+    if (res.code === 200) {
+      sector.priority = priority
+      if (row.sectors) row.sectors.sort((a, b) => (b.priority || 0) - (a.priority || 0))
+      ElMessage.success(`已设「${sector.sector_name}」优先级 ${priority}`)
+    } else {
+      ElMessage.error(res.message || '设置优先级失败')
+    }
+  } catch (e) {
+    ElMessage.error('设置优先级失败')
+  }
 }
 
 // 格式化时间
