@@ -975,6 +975,12 @@ class MetadataService:
                     for s in stocks if s.get('code')
                 })
                 logger.info(f"  行业 {industry_name} 包含 {len(stock_codes)} 只成分股，立即落库...")
+                if not stock_codes:
+                    # 空结果保护：东财限流/失败返回空 []，按空集 diff 会误删该板块旧关联，
+                    # 故空一律跳过、保留原数据；仍 sleep 避免连续空请求加剧限流
+                    logger.warning(f"  ⚠️ 行业 {industry_name}({industry_code}) 成分股为空（疑似东财限流/失败），跳过本次 diff，保留原有关联")
+                    time.sleep(2)
+                    continue
 
                 try:
                     # 按 sector_code(ind_BKxxxx) 唯一键查找，命中则更新（含改名同步）
@@ -1148,6 +1154,12 @@ class MetadataService:
                 })
                 time.sleep(2)
                 logger.info(f"  概念 {concept_name} 包含 {len(stock_codes)} 只成分股，立即落库...")
+                if not stock_codes:
+                    # 空结果保护：东财限流/失败时 get_concept_stocks 返回空 []，
+                    # 若按空集做 diff，to_del=全部旧关联 → 会误删该板块已保存的成分股。
+                    # 概念板块正常都有成分股，返回 0 几乎一定是限流 → 跳过、保留原数据，留待下次补。
+                    logger.warning(f"  ⚠️ 概念 {concept_name}({concept_code}) 成分股为空（疑似东财限流/失败），跳过本次 diff，保留原有关联")
+                    continue
 
                 # 立即创建板块并添加关联
                 try:
