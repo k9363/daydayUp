@@ -1086,7 +1086,7 @@ class MetadataService:
             logger.info(f"已有成分股关联的板块数量: {sectors_with_relations}")
 
             # 时效性概念（昨日连板/涨停/新高/破净等，成分股每日变）每次覆盖刷新；其余断点续传
-            dynamic_kws = ('昨日', '今日', '连板', '涨停', '跌停', '新高', '新低', '近期', '破净')
+            dynamic_kws = ('昨日', '今日', '连板', '涨停', '跌停', '新高', '新低', '近期', '破净', '热股')
             sectors_to_process = []
             dynamic_codes = set()  # 需覆盖刷新（落库前先删旧关联）的板块 code
             for concept in concept_list:
