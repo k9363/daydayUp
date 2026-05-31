@@ -37,6 +37,43 @@ def get_summary():
         return jsonify({'code': 500, 'message': str(e)}), 500
 
 
+@metadata_bp.route('/relation/priority', methods=['POST'])
+def update_relation_priority():
+    """更新 股票-板块 关系的人工优先级（0-10，越大越优先）。
+
+    body: {stock_code, sector_code, priority}
+    供元数据管理 / 复盘详情人工维护；分析侧（个股板块关联、全市场板块关系）按优先级排序取 top-N。
+    """
+    try:
+        data = request.get_json() or {}
+        stock_code = (data.get('stock_code') or '').strip()
+        sector_code = (data.get('sector_code') or '').strip()
+        priority = data.get('priority')
+        if not stock_code or not sector_code or priority is None:
+            return jsonify({'code': 400, 'message': '缺少 stock_code / sector_code / priority'}), 400
+        try:
+            priority = max(0, min(10, int(priority)))
+        except (ValueError, TypeError):
+            return jsonify({'code': 400, 'message': 'priority 必须是 0-10 的整数'}), 400
+        sector = StockSector.query.filter(StockSector.sector_code == sector_code).first()
+        if not sector:
+            return jsonify({'code': 404, 'message': '板块不存在'}), 404
+        rel = StockSectorRelation.query.filter(
+            StockSectorRelation.stock_code == stock_code,
+            StockSectorRelation.sector_id == sector.id,
+        ).first()
+        if not rel:
+            return jsonify({'code': 404, 'message': '股票-板块关系不存在'}), 404
+        rel.priority = priority
+        db.session.commit()
+        return jsonify({'code': 200, 'message': '操作成功',
+                        'data': {'stock_code': stock_code, 'sector_code': sector_code, 'priority': priority}})
+    except Exception as e:
+        db.session.rollback()
+        logger.exception("更新板块关系优先级失败")
+        return jsonify({'code': 500, 'message': str(e)}), 500
+
+
 @metadata_bp.route('/supplement', methods=['POST'])
 def supplement_metadata():
     """
@@ -496,8 +533,12 @@ def get_sector_stocks(sector_code):
             stock_sectors_map[rel.stock_code].append({
                 'sector_code': sec.sector_code,
                 'sector_name': sec.sector_name,
-                'sector_type': sec.sector_type
+                'sector_type': sec.sector_type,
+                'priority': rel.priority,
             })
+        # 每只股票的板块按人工优先级降序（高优先级在前）
+        for _c in stock_sectors_map:
+            stock_sectors_map[_c].sort(key=lambda x: -(x.get('priority') or 0))
 
         # 构建返回数据
         stocks_data = []
@@ -861,7 +902,12 @@ def get_stocks_with_sectors():
             } for s in sectors}
             for rel in relations:
                 if rel.sector_id in sector_map:
-                    stock_sectors_map.setdefault(rel.stock_code, []).append(sector_map[rel.sector_id])
+                    item = dict(sector_map[rel.sector_id])
+                    item['priority'] = rel.priority
+                    stock_sectors_map.setdefault(rel.stock_code, []).append(item)
+            # 每只股票的板块按人工优先级降序（高优先级在前）
+            for _c in stock_sectors_map:
+                stock_sectors_map[_c].sort(key=lambda x: -(x.get('priority') or 0))
 
         result = []
         for stock in stocks:

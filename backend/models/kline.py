@@ -52,6 +52,7 @@ class StockSectorRelation(db.Model):
     id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
     stock_code = db.Column(db.String(20), nullable=False, comment='股票代码')
     sector_id = db.Column(db.BigInteger, db.ForeignKey('stock_sector.id'), nullable=False, comment='板块ID')
+    priority = db.Column(db.SmallInteger, nullable=False, server_default='0', comment='人工优先级 0-10，越大越优先')
     create_time = db.Column(db.DateTime, default=datetime.now, comment='创建时间')
 
     __table_args__ = (
@@ -65,6 +66,9 @@ class StockSectorRelation(db.Model):
             'stock_code': self.stock_code,
             'sector_id': self.sector_id,
             'sector_name': self.sector.sector_name if self.sector else None,
+            'sector_type': self.sector.sector_type if self.sector else None,
+            'sector_code': self.sector.sector_code if self.sector else None,
+            'priority': self.priority,
             'create_time': self.create_time.strftime('%Y-%m-%d %H:%M:%S') if self.create_time else None,
         }
 

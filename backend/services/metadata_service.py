@@ -572,10 +572,10 @@ class MetadataService:
         if db_session is None:
             db_session = db.session
         
-        # 按进入板块时间倒序（最近加入的板块优先 — 通常反映股票最新的题材定位）
+        # 按人工优先级降序（高优先级板块在前），同优先级再按进入时间倒序（最近加入优先）
         relations = db_session.query(StockSectorRelation).filter(
             StockSectorRelation.stock_code == stock_code
-        ).order_by(StockSectorRelation.create_time.desc()).all()
+        ).order_by(StockSectorRelation.priority.desc(), StockSectorRelation.create_time.desc()).all()
 
         return [r.to_dict() for r in relations]
 
