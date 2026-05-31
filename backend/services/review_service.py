@@ -1259,7 +1259,24 @@ class ReviewTaskService:
 
         # 3. 找出缺失的股票
         missing_codes = [code for code in expected_stock_codes if code not in existing_codes]
-        logger.info(f"缺失 {len(missing_codes)} 只股票的 {trade_date} 日K数据")
+        # 排除停牌/退市/次新无数据股：最近 K 线远早于复盘日（或无 K 线）的不算缺失，否则会为
+        # 停牌股反复触发同步、baostock 兜底失败导致复盘卡死（如 *ST 停牌股，本就没有当日数据）
+        if missing_codes:
+            from sqlalchemy import func as _sqlfunc
+            from datetime import datetime as _dt, timedelta as _td
+            _last_map = dict(db_session.query(StockDailyKLine.stock_code, _sqlfunc.max(StockDailyKLine.trade_date))
+                             .filter(StockDailyKLine.stock_code.in_(missing_codes))
+                             .group_by(StockDailyKLine.stock_code).all())
+            try:
+                _cut = (_dt.strptime(str(trade_date)[:10], '%Y-%m-%d') - _td(days=10)).strftime('%Y-%m-%d')
+            except Exception:
+                _cut = None
+            if _cut:
+                _suspended = [c for c in missing_codes if (not _last_map.get(c)) or str(_last_map[c])[:10] < _cut]
+                if _suspended:
+                    logger.info(f"跳过 {len(_suspended)} 只停牌/退市/次新股(最近K线早于{_cut}或无K线): {_suspended[:8]}")
+                missing_codes = [c for c in missing_codes if c not in _suspended]
+        logger.info(f"缺失 {len(missing_codes)} 只股票的 {trade_date} 日K数据(已排除停牌/退市)")
         logger.info(f"=== DEBUG: missing_codes前10: {missing_codes[:10]}")
 
         # 4. 如果全部存在，直接返回

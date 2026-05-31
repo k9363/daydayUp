@@ -540,8 +540,15 @@ class DataSyncService:
             logger.info(f"同步任务状态已更新为 running")
 
         try:
-            # 确保已登录（自动重连如果会话失效）
-            self.ensure_login()
+            # baostock 登录失败不再阻断主流程：tushare 快速路径优先，baostock 仅兜底。
+            # 旧逻辑 ensure_login 在最前，baostock 登录失败会直接让整个同步 failed、连
+            # tushare 快速路径都跑不到 —— 复盘为一只停牌股就卡死的根因。
+            baostock_ok = True
+            try:
+                self.ensure_login()
+            except Exception as _be:
+                baostock_ok = False
+                logger.warning(f"⚠️ baostock 登录失败，本次只用 tushare 快速路径，baostock 兜底跳过: {_be}")
 
             # 如果传入了 stock_codes，直接使用；否则从数据库查询
             if stock_codes:
@@ -700,6 +707,12 @@ class DataSyncService:
                 # 重新计算 remaining_codes 把 Tushare 覆盖的剔除
                 remaining_codes = [c for c in remaining_codes if c not in tushare_covered_codes]
                 logger.info(f"baostock 兜底处理剩余: {len(remaining_codes)} 只")
+
+            # baostock 不可用时跳过兜底（tushare 已覆盖的正常股不受影响；剩余多为停牌/次新无数据）
+            if not baostock_ok and remaining_codes:
+                logger.warning(f"⚠️ baostock 不可用，跳过 {len(remaining_codes)} 只兜底股（多为停牌/次新/无 tushare 数据）")
+                failed_codes.extend(remaining_codes)
+                remaining_codes = []
 
             # 批量保存：积累多只股票数据后再保存
             batch_data_list = []  # 积累多只股票的数据
