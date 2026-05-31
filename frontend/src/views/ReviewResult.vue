@@ -398,7 +398,41 @@
             </template>
           </el-table-column>
           <el-table-column prop="name" label="名称" width="120" />
-          <el-table-column prop="sector" label="所属板块" width="180" />
+          <el-table-column label="所属板块" min-width="320">
+            <template #default="{ row }">
+              <div v-if="row.sectors && row.sectors.length > 0">
+                <el-popover
+                  v-for="sector in row.sectors"
+                  :key="sector.sector_code"
+                  trigger="click"
+                  :width="230"
+                  placement="top"
+                >
+                  <template #reference>
+                    <el-tag
+                      :type="sectorTagType(sector.sector_type)"
+                      size="small"
+                      :effect="sector.priority > 0 ? 'dark' : 'light'"
+                      class="sector-tag clickable"
+                    >
+                      {{ sector.sector_name }}<template v-if="sector.priority > 0"> ·{{ sector.priority }}</template>
+                    </el-tag>
+                  </template>
+                  <div>
+                    <div style="font-weight:600;margin-bottom:6px">{{ sector.sector_name }}</div>
+                    <div style="display:flex;align-items:center;gap:6px">
+                      <span>优先级</span>
+                      <el-select :model-value="sector.priority || 0" size="small" style="width:80px"
+                                 @change="(v) => updateSectorPriority(sector, v, row.code)">
+                        <el-option v-for="n in 11" :key="n - 1" :value="n - 1" :label="String(n - 1)" />
+                      </el-select>
+                    </div>
+                  </div>
+                </el-popover>
+              </div>
+              <span v-else>{{ row.sector || '-' }}</span>
+            </template>
+          </el-table-column>
           <el-table-column prop="industry" label="所属行业" width="120" />
           <el-table-column label="成交额(亿)" width="150" align="right">
             <template #default="{ row }">
