@@ -888,102 +888,106 @@ class MetadataService:
             return f'sz.{code}'
         return code
     
-    def supplement_industry_sectors_from_akshare(self, db_session=None):
+    def supplement_industry_sectors_from_akshare(self, db_session=None, full_sync=False):
         """
-        使用AKShare补充行业板块和成分股（支持断点续传）
-        
+        使用东方财富补充行业板块和成分股
+
         Args:
             db_session: 数据库会话
-            
+            full_sync: True=全量比对（所有板块重拉成分股做 diff，低频用，开销大）；
+                       False=增量（新板块/无关联板块补缺）
+
         Returns:
             dict: {'sectors': 板块结果, 'relations': 关联结果}
         """
         if db_session is None:
             db_session = db.session
-        
+
         sector_result = {'added': 0, 'updated': 0, 'skipped': 0}
-        relation_result = {'added': 0, 'updated': 0, 'skipped': 0}
-        
+        relation_result = {'added': 0, 'updated': 0, 'skipped': 0, 'removed': 0}
+
         try:
             aks = self._get_eastmoney_service()
             if not aks:
                 logger.warning("AKShare 服务不可用")
                 return {'sectors': sector_result, 'relations': relation_result}
-            
+
             logger.info("开始通过东方财富补充行业板块...")
 
             # 1. 获取所有行业分类
             industry_list = aks.get_industry_classify()
-
             if not industry_list:
                 logger.warning("未获取到行业分类数据")
                 return {'sectors': sector_result, 'relations': relation_result}
-
             logger.info(f"获取到 {len(industry_list)} 个行业分类")
 
-            # 2. 获取已存在的行业板块列表（用于断点续传）
-            existing_sectors = db_session.query(StockSector.sector_name, StockSector.id).filter(
-                StockSector.sector_type == 'industry'
-            ).all()
-            existing_sector_names = {s.sector_name: s.id for s in existing_sectors}
-            logger.info(f"数据库已存在 {len(existing_sector_names)} 个行业板块")
+            # 2. 已存板块按 sector_code(ind_BKxxxx) 建唯一键索引
+            #    用东财稳定的 BK 代码作 key：板块改名也能命中同一条而非重复新建
+            existing_sectors = db_session.query(
+                StockSector.sector_code, StockSector.id
+            ).filter(StockSector.sector_type == 'industry').all()
+            existing_by_code = {s.sector_code: s.id for s in existing_sectors}
+            logger.info(f"数据库已存在 {len(existing_by_code)} 个行业板块")
 
-            # 3. 统计已有关联关系的板块数量
-            sectors_with_relations = db_session.query(StockSectorRelation.sector_id).distinct().count()
-            logger.info(f"已有成分股关联的板块数量: {sectors_with_relations}")
+            def _skey(code):
+                # 与落库时的 sector_code 规则保持一致
+                return f"ind_{code[:10]}" if code else ''
 
-            # 4. 筛选出需要处理的板块（不在数据库中 或 没有成分股关联）
+            # 筛选策略（落库统一走关联层增量 diff，未变动不写）：
+            #   - 新板块（按 code 不存在）→ 处理
+            #   - full_sync（低频全量比对）→ 所有板块重拉成分股做 diff，补漏平日跳过的增删/改名
+            #   - 否则断点续传：仅补无成分股关联的板块
+            # 行业为固定分类，无时效性概念，故不设关键词每日刷新（与概念板块的区别）
             sectors_to_process = []
             for item in industry_list:
-                industry_name = item.get('industry', '')
-                if not industry_name or industry_name == '未知':
+                iname = item.get('industry', '')
+                icode = item.get('code', '')
+                if not iname or iname == '未知' or not icode:
                     continue
-                
-                if industry_name not in existing_sector_names:
-                    # 新板块，需要处理
-                    sectors_to_process.append(item)
+                skey = _skey(icode)
+                if skey not in existing_by_code:
+                    sectors_to_process.append(item)          # 新板块
+                elif full_sync:
+                    sectors_to_process.append(item)          # 全量比对
                 else:
-                    # 已存在的板块，检查是否有成分股关联
-                    sector_id = existing_sector_names[industry_name]
-                    has_relation = db_session.query(StockSectorRelation).filter(
-                        StockSectorRelation.sector_id == sector_id
+                    has_rel = db_session.query(StockSectorRelation).filter(
+                        StockSectorRelation.sector_id == existing_by_code[skey]
                     ).first()
-                    if not has_relation:
-                        # 没有成分股关联，需要处理
-                        sectors_to_process.append(item)
+                    if not has_rel:
+                        sectors_to_process.append(item)      # 断点续传补缺
 
-            logger.info(f"需要处理的行业板块数量: {len(sectors_to_process)} (总计 {len(industry_list)} 个)")
+            logger.info(
+                f"需要处理的行业板块数量: {len(sectors_to_process)} (总计 {len(industry_list)} 个)，全量={full_sync}"
+            )
 
-            # 5. 遍历需要处理的行业
+            import time
             for i, item in enumerate(sectors_to_process):
                 industry_name = item.get('industry', '')
-
-                if not industry_name or industry_name == '未知':
+                industry_code = item.get('code', '')
+                if not industry_name or industry_name == '未知' or not industry_code:
                     continue
 
-                logger.info(f"[{i+1}/{len(sectors_to_process)}] 获取行业 {industry_name} 的成分股...")
-                
-                # 获取该行业的成分股
-                stocks = aks.get_industry_stocks(item.get('code', ''))
-                stock_codes = []
-                for stock in stocks:
-                    code = self._convert_code_to_baostock_format(stock.get('code', ''))
-                    if code:
-                        stock_codes.append(code)
-                
-                stock_codes = list(set(stock_codes))  # 去重
-                logger.info(f"获取到 {len(stock_codes)} 只成分股，立即落库...")
-                
-                # 立即创建板块并添加关联
+                logger.info(f"[{i+1}/{len(sectors_to_process)}] 获取行业 {industry_name}({industry_code}) 的成分股...")
+
+                stocks = aks.get_industry_stocks(industry_code)
+                stock_codes = list({
+                    self._convert_code_to_baostock_format(s.get('code', ''))
+                    for s in stocks if s.get('code')
+                })
+                logger.info(f"  行业 {industry_name} 包含 {len(stock_codes)} 只成分股，立即落库...")
+
                 try:
-                    # 检查板块是否存在
-                    sector = db_session.query(StockSector).filter(
-                        StockSector.sector_name == industry_name,
-                        StockSector.sector_type == 'industry'
-                    ).first()
+                    # 按 sector_code(ind_BKxxxx) 唯一键查找，命中则更新（含改名同步）
+                    skey = f"ind_{industry_code[:10]}" if industry_code else ''
+                    sector = None
+                    if skey in existing_by_code:
+                        sector = db_session.query(StockSector).get(existing_by_code[skey])
 
                     if sector:
-                        # 更新
+                        # 更新（板块改名时同步 sector_name）
+                        if sector.sector_name != industry_name:
+                            logger.info(f"  板块 {skey} 改名: {sector.sector_name} → {industry_name}")
+                            sector.sector_name = industry_name
                         sector.stock_count = len(stock_codes)
                         sector.update_time = datetime.now()
                         db_session.add(sector)
@@ -991,7 +995,7 @@ class MetadataService:
                     else:
                         # 新增
                         sector = StockSector(
-                            sector_code=f"ind_{industry_name[:18]}",
+                            sector_code=skey,
                             sector_name=industry_name,
                             sector_type='industry',
                             stock_count=len(stock_codes),
@@ -999,43 +1003,48 @@ class MetadataService:
                         db_session.add(sector)
                         db_session.flush()  # 获取 sector.id
                         sector_result['added'] += 1
+                        existing_by_code[skey] = sector.id
 
-                    # 添加股票-板块关联
-                    for scode in stock_codes:
-                        exists = db_session.query(StockSectorRelation).filter(
-                            StockSectorRelation.stock_code == scode,
+                    # 关联层增量 diff：仅 INSERT 新进、仅 DELETE 移出，未变动不写
+                    new_codes = {c for c in stock_codes if c}
+                    old_codes = {
+                        r.stock_code for r in db_session.query(StockSectorRelation.stock_code).filter(
                             StockSectorRelation.sector_id == sector.id
-                        ).first()
+                        ).all()
+                    }
+                    to_add = new_codes - old_codes
+                    to_del = old_codes - new_codes
+                    for scode in to_add:
+                        db_session.add(StockSectorRelation(stock_code=scode, sector_id=sector.id))
+                    if to_del:
+                        db_session.query(StockSectorRelation).filter(
+                            StockSectorRelation.sector_id == sector.id,
+                            StockSectorRelation.stock_code.in_(to_del)
+                        ).delete(synchronize_session=False)
+                    relation_result['added'] += len(to_add)
+                    relation_result['removed'] += len(to_del)
+                    relation_result['skipped'] += len(new_codes & old_codes)
+                    if to_add or to_del:
+                        logger.info(f"  行业 {industry_name} 成分股 diff: +{len(to_add)} -{len(to_del)} (不变 {len(new_codes & old_codes)})")
 
-                        if not exists:
-                            relation = StockSectorRelation(
-                                stock_code=scode,
-                                sector_id=sector.id
-                            )
-                            db_session.add(relation)
-                            relation_result['added'] += 1
-                        else:
-                            relation_result['skipped'] += 1
-                    
                     # 每获取一个板块就提交
                     db_session.commit()
                     logger.info(f"✅ 行业 {industry_name} 落库完成: {len(stock_codes)} 只成分股")
-                    
+
                 except Exception as sector_error:
                     db_session.rollback()
                     logger.error(f"❌ 行业 {industry_name} 落库失败: {sector_error}")
                     sector_result['skipped'] += 1
-                
+
                 # 添加延时，避免请求过快
-                import time
                 time.sleep(2)
 
-            logger.info(f"✅ 行业板块补充完成: 处理{sector_result['added'] + sector_result['updated']}个板块, 新增{relation_result['added']}条关联, 跳过{sector_result['skipped']}个")
-            
+            logger.info(f"✅ 行业板块补充完成: 新增{sector_result['added']}个板块, 更新{sector_result['updated']}个板块, 关联 +{relation_result['added']} -{relation_result['removed']} (不变{relation_result['skipped']}), 失败{sector_result['skipped']}")
+
         except Exception as e:
             db_session.rollback()
             logger.error(f"通过AKShare补充行业板块失败: {e}")
-        
+
         return {'sectors': sector_result, 'relations': relation_result}
     
     def supplement_concept_sectors_from_akshare(self, db_session=None, full_sync=False):
