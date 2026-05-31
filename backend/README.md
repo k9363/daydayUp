@@ -80,6 +80,20 @@ backend/
 | GET | /api/review/task/{id}/report | 获取分析报告 |
 | DELETE | /api/review/task/{id} | 删除任务 |
 
+## 定时任务（APScheduler）
+
+> `day_of_week` 用 APScheduler 数字记法，**0=周一**（非 crontab 的周日）。
+
+| 触发 | 任务 | 说明 |
+|---|---|---|
+| 周一~**六** 17:30 | 元数据增量补充 | 行业 + 概念（东财 BK 码作 `sector_code` 唯一键 + 关联层增量 diff）+ 个股补缺；概念时效板块每个交易日刷新；**周六**对行业+概念做全量 diff 补漏 |
+| 周一~五 18:00 | 每日复盘 | 全市场 K 线（tushare market-daily 快速路径为主 + baostock 兜底）；成功后 HTTP 触发 TA-CN 全市场综合分析 |
+| 每天 每 2 小时 :00 | 淘股吧手机端热帖聚合 | → `external_analysis`（source=tgb-mobile-hot）|
+| 每天 每 2 小时 :05 | 淘股吧特别关注流 | → `external_analysis`（source=tgb-special-focus）|
+
+元数据补充内部逻辑（唯一键、diff、断点续传、时效关键词、周六全量）及 **TA-CN 侧全部定时任务、数据流与排障**，
+详见 TradingAgents 仓库 `docs/cron-and-data-flow.md`（两项目定时任务的权威文档）。
+
 ## 快速开始
 
 ### 1. 安装依赖
