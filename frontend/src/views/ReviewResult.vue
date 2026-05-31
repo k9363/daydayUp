@@ -532,14 +532,28 @@
                        @change="(v) => updateSectorPriority(tagSector, v, tagStockCode)">
               <el-option v-for="n in 11" :key="n - 1" :value="n - 1" :label="String(n - 1)" />
             </el-select>
-            <span style="margin-left:auto;color:var(--el-text-color-secondary)">共 {{ tagSectorStocks.length }} 只成分股</span>
+            <span style="margin-left:auto;color:var(--el-text-color-secondary)">共 {{ tagSectorTotal }} 只成分股</span>
           </div>
           <el-table :data="tagSectorStocks" stripe max-height="420" style="width:100%">
-            <el-table-column type="index" label="排名" width="70" align="center" />
+            <el-table-column label="排名" width="70" align="center">
+              <template #default="{ $index }">{{ (tagSectorPage - 1) * tagSectorPageSize + $index + 1 }}</template>
+            </el-table-column>
             <el-table-column prop="stock_code" label="代码" width="120" />
             <el-table-column prop="stock_name" label="名称" min-width="120" />
             <el-table-column prop="industry" label="所属行业" min-width="120" />
           </el-table>
+          <div style="display:flex;justify-content:flex-end;margin-top:12px">
+            <el-pagination
+              v-model:current-page="tagSectorPage"
+              v-model:page-size="tagSectorPageSize"
+              :page-sizes="[20, 50, 100, 200]"
+              :total="tagSectorTotal"
+              size="small"
+              layout="total, sizes, prev, pager, next"
+              @size-change="handleTagSectorSizeChange"
+              @current-change="handleTagSectorPageChange"
+            />
+          </div>
         </div>
         <template #footer>
           <el-button @click="showSectorTagDialog = false">关闭</el-button>
@@ -808,23 +822,26 @@ const sectorStocksList = ref([])
 const currentSectorName = ref('')
 const sectorStocksTotal = ref(0)
 
-// 点击所属板块 tag -> 该板块成分股（与元数据一致）+ 本股优先级
+// 点击所属板块 tag -> 该板块成分股（与元数据一致：分页懒加载）+ 本股优先级
 const showSectorTagDialog = ref(false)
 const tagSector = ref(null)
 const tagStockCode = ref('')
 const tagSectorStocks = ref([])
 const tagSectorLoading = ref(false)
-const openSectorTagDetail = async (row, sector) => {
-  tagSector.value = sector
-  tagStockCode.value = row.code
-  tagSectorStocks.value = []
-  showSectorTagDialog.value = true
-  if (!sector.sector_code) return
+const tagSectorPage = ref(1)
+const tagSectorPageSize = ref(50)
+const tagSectorTotal = ref(0)
+const loadTagSectorStocks = async () => {
+  if (!tagSector.value?.sector_code) return
   tagSectorLoading.value = true
   try {
-    const res = await getSectorStocks(sector.sector_code, { page: 1, page_size: 500 })
+    const res = await getSectorStocks(tagSector.value.sector_code, {
+      page: tagSectorPage.value,
+      page_size: tagSectorPageSize.value
+    })
     if (res.code === 200) {
       tagSectorStocks.value = res.data?.stocks || res.data?.list || []
+      tagSectorTotal.value = res.data?.total || 0
     }
   } catch (e) {
     console.error('获取板块成分股失败:', e)
@@ -833,6 +850,17 @@ const openSectorTagDetail = async (row, sector) => {
     tagSectorLoading.value = false
   }
 }
+const openSectorTagDetail = (row, sector) => {
+  tagSector.value = sector
+  tagStockCode.value = row.code
+  tagSectorStocks.value = []
+  tagSectorTotal.value = 0
+  tagSectorPage.value = 1
+  showSectorTagDialog.value = true
+  loadTagSectorStocks()
+}
+const handleTagSectorPageChange = (p) => { tagSectorPage.value = p; loadTagSectorStocks() }
+const handleTagSectorSizeChange = (s) => { tagSectorPageSize.value = s; tagSectorPage.value = 1; loadTagSectorStocks() }
 
 // 标签管理
 const showTagDialog = ref(false)
