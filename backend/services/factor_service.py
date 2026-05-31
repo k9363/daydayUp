@@ -952,7 +952,6 @@ class FactorCalculator:
 
         只统计当日有正常成交（turnover>0）的成分股，停牌股不计入。
         """
-        import datetime as dt
         from models.kline import StockSector, StockDailyKLine
 
         if not sector_codes or not trade_date:
@@ -992,27 +991,30 @@ class FactorCalculator:
             for r in today_rows
         }
 
-        # 3. 近5个交易日均成交额（含当日，排除停牌日）
-        start_str = (dt.datetime.strptime(trade_date, '%Y-%m-%d') - dt.timedelta(days=20)).strftime('%Y-%m-%d')
-        hist_rows = db_session.query(
-            StockDailyKLine.stock_code,
-            StockDailyKLine.turnover,
-        ).filter(
-            StockDailyKLine.stock_code.in_(all_codes),
-            StockDailyKLine.trade_date >= start_str,
-            StockDailyKLine.trade_date <= trade_date,
-            StockDailyKLine.turnover.isnot(None),
-            StockDailyKLine.turnover > 0,
-        ).order_by(
-            StockDailyKLine.stock_code, StockDailyKLine.trade_date.desc()
-        ).all()
-        hist = {}
-        for r in hist_rows:
-            hist.setdefault(r.stock_code, []).append(float(r.turnover or 0))
-        avg5 = {
-            code: (sum(vals[:5]) / 5 if len(vals) >= 5 else (sum(vals) / len(vals) if vals else 0))
-            for code, vals in hist.items()
-        }
+        # 3. 近5个交易日均成交额（排除停牌日）
+        #    性能优化：先取全市场最近5个交易日，再用 IN(精确5天) + GROUP BY 在 DB 端
+        #    求每股均额，只回 ~N 行。避免「20天范围 + IN(数千股)」触发大范围扫描拉回
+        #    数万行（实测 ~28s -> ~4s）。
+        from sqlalchemy import func
+        recent_days = [
+            d[0] for d in db_session.query(StockDailyKLine.trade_date)
+            .filter(StockDailyKLine.trade_date <= trade_date)
+            .distinct()
+            .order_by(StockDailyKLine.trade_date.desc())
+            .limit(5).all()
+        ]
+        avg5 = {}
+        if recent_days:
+            avg_rows = db_session.query(
+                StockDailyKLine.stock_code,
+                func.avg(StockDailyKLine.turnover),
+            ).filter(
+                StockDailyKLine.stock_code.in_(all_codes),
+                StockDailyKLine.trade_date.in_(recent_days),
+                StockDailyKLine.turnover.isnot(None),
+                StockDailyKLine.turnover > 0,
+            ).group_by(StockDailyKLine.stock_code).all()
+            avg5 = {code: float(v or 0) for code, v in avg_rows}
 
         # 4. 逐板块聚合（仅统计当日有成交的成分股，保证分子分母口径一致）
         result = {}
