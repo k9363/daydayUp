@@ -400,16 +400,6 @@
           <el-table-column prop="name" label="名称" width="120" />
           <el-table-column prop="sector" label="所属板块" width="180" />
           <el-table-column prop="industry" label="所属行业" width="120" />
-          <el-table-column label="总市值(亿)" width="120" align="right">
-            <template #default="{ row }">
-              {{ formatMarketValue(row.totalMarketValue) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="流通市值(亿)" width="130" align="right">
-            <template #default="{ row }">
-              {{ formatMarketValue(row.circulateMarketValue) }}
-            </template>
-          </el-table-column>
           <el-table-column label="成交额(亿)" width="150" align="right">
             <template #default="{ row }">
               {{ formatAmount(row.amount || row.turnover || 0) }}
