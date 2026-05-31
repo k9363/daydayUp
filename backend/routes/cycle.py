@@ -104,7 +104,7 @@ def create_sub_period(cycle_id):
         name=data.get('name', data['period_type']),
         features=data.get('features'),
         start_date=data['start_date'],
-        end_date=data.get('end_date'),
+        end_date=(data.get('end_date') or None),  # 空串归一为 NULL，保证开区间能被正确匹配
         order_num=data.get('order_num', max_order + 1)
     )
     db.session.add(sub_period)
@@ -129,7 +129,7 @@ def update_sub_period(sub_period_id):
     if 'start_date' in data:
         sub_period.start_date = data['start_date']
     if 'end_date' in data:
-        sub_period.end_date = data['end_date']
+        sub_period.end_date = (data['end_date'] or None)  # 空串归一为 NULL
     if 'order_num' in data:
         sub_period.order_num = data['order_num']
 
@@ -242,9 +242,10 @@ def get_cycle_by_date(trade_date):
     ).order_by(CycleSubPeriod.start_date.desc()).first()
 
     # 未命中封闭区间，则归属到进行中（无 end_date）的小周期
+    # 注意：开区间的 end_date 可能是 NULL，也可能历史数据落成空字符串 ''，两者都按开区间处理
     if not sub_period:
         sub_period = CycleSubPeriod.query.filter(
-            CycleSubPeriod.end_date == None,
+            db.or_(CycleSubPeriod.end_date == None, CycleSubPeriod.end_date == ''),
             CycleSubPeriod.start_date <= trade_date
         ).order_by(CycleSubPeriod.start_date.desc()).first()
 
@@ -269,9 +270,9 @@ def get_latest_cycle():
     from datetime import date
     today = date.today().strftime('%Y-%m-%d')
 
-    # 直接取进行中（无 end_date）且已开始的小周期
+    # 直接取进行中（无 end_date，含历史空串 ''）且已开始的小周期
     sub_period = CycleSubPeriod.query.filter(
-        CycleSubPeriod.end_date == None,
+        db.or_(CycleSubPeriod.end_date == None, CycleSubPeriod.end_date == ''),
         CycleSubPeriod.start_date <= today
     ).order_by(CycleSubPeriod.start_date.desc()).first()
 
