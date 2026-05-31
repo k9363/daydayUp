@@ -149,34 +149,17 @@
           <el-table-column label="所属板块" min-width="280">
             <template #default="{ row }">
               <div v-if="rowSectors(row.code).length > 0">
-                <el-popover
+                <el-tag
                   v-for="sector in rowSectors(row.code)"
                   :key="sector.sector_code"
-                  trigger="click"
-                  :width="230"
-                  placement="top"
+                  :type="sectorTagType(sector.sector_type)"
+                  size="small"
+                  :effect="sector.priority > 0 ? 'dark' : 'light'"
+                  class="sector-tag clickable"
+                  @click="openSectorTagDetail(row, sector)"
                 >
-                  <template #reference>
-                    <el-tag
-                      :type="sectorTagType(sector.sector_type)"
-                      size="small"
-                      :effect="sector.priority > 0 ? 'dark' : 'light'"
-                      class="sector-tag clickable"
-                    >
-                      {{ sector.sector_name }}<template v-if="sector.priority > 0"> ·{{ sector.priority }}</template>
-                    </el-tag>
-                  </template>
-                  <div>
-                    <div style="font-weight:600;margin-bottom:6px">{{ sector.sector_name }}</div>
-                    <div style="display:flex;align-items:center;gap:6px">
-                      <span>优先级</span>
-                      <el-select :model-value="sector.priority || 0" size="small" style="width:80px"
-                                 @change="(v) => updateSectorPriority(sector, v, row.code)">
-                        <el-option v-for="n in 11" :key="n - 1" :value="n - 1" :label="String(n - 1)" />
-                      </el-select>
-                    </div>
-                  </div>
-                </el-popover>
+                  {{ sector.sector_name }}<template v-if="sector.priority > 0"> ·{{ sector.priority }}</template>
+                </el-tag>
               </div>
               <span v-else>{{ row.sector || '-' }}</span>
             </template>
@@ -478,34 +461,17 @@
           <el-table-column label="所属板块" min-width="320">
             <template #default="{ row }">
               <div v-if="rowSectors(row.code).length > 0">
-                <el-popover
+                <el-tag
                   v-for="sector in rowSectors(row.code)"
                   :key="sector.sector_code"
-                  trigger="click"
-                  :width="230"
-                  placement="top"
+                  :type="sectorTagType(sector.sector_type)"
+                  size="small"
+                  :effect="sector.priority > 0 ? 'dark' : 'light'"
+                  class="sector-tag clickable"
+                  @click="openSectorTagDetail(row, sector)"
                 >
-                  <template #reference>
-                    <el-tag
-                      :type="sectorTagType(sector.sector_type)"
-                      size="small"
-                      :effect="sector.priority > 0 ? 'dark' : 'light'"
-                      class="sector-tag clickable"
-                    >
-                      {{ sector.sector_name }}<template v-if="sector.priority > 0"> ·{{ sector.priority }}</template>
-                    </el-tag>
-                  </template>
-                  <div>
-                    <div style="font-weight:600;margin-bottom:6px">{{ sector.sector_name }}</div>
-                    <div style="display:flex;align-items:center;gap:6px">
-                      <span>优先级</span>
-                      <el-select :model-value="sector.priority || 0" size="small" style="width:80px"
-                                 @change="(v) => updateSectorPriority(sector, v, row.code)">
-                        <el-option v-for="n in 11" :key="n - 1" :value="n - 1" :label="String(n - 1)" />
-                      </el-select>
-                    </div>
-                  </div>
-                </el-popover>
+                  {{ sector.sector_name }}<template v-if="sector.priority > 0"> ·{{ sector.priority }}</template>
+                </el-tag>
               </div>
               <span v-else>{{ row.sector || '-' }}</span>
             </template>
@@ -546,6 +512,37 @@
           <span class="dialog-footer">
             <el-button @click="showSectorStocksDialog = false">关闭</el-button>
           </span>
+        </template>
+      </el-dialog>
+
+      <!-- 板块 tag 详情：成分股（与元数据一致）+ 本股在该板块的优先级 -->
+      <el-dialog
+        v-model="showSectorTagDialog"
+        :title="tagSector ? `${tagSector.sector_name} · 成分股` : '板块成分股'"
+        width="640px"
+        destroy-on-close
+      >
+        <div v-loading="tagSectorLoading">
+          <div v-if="tagSector" style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+            <el-tag :type="sectorTagType(tagSector.sector_type)" size="small" effect="plain">
+              {{ tagSector.sector_type === 'concept' ? '概念' : '行业' }}
+            </el-tag>
+            <span style="color:var(--el-text-color-secondary)">本股优先级</span>
+            <el-select :model-value="tagSector.priority || 0" size="small" style="width:90px"
+                       @change="(v) => updateSectorPriority(tagSector, v, tagStockCode)">
+              <el-option v-for="n in 11" :key="n - 1" :value="n - 1" :label="String(n - 1)" />
+            </el-select>
+            <span style="margin-left:auto;color:var(--el-text-color-secondary)">共 {{ tagSectorStocks.length }} 只成分股</span>
+          </div>
+          <el-table :data="tagSectorStocks" stripe max-height="420" style="width:100%">
+            <el-table-column type="index" label="排名" width="70" align="center" />
+            <el-table-column prop="stock_code" label="代码" width="120" />
+            <el-table-column prop="stock_name" label="名称" min-width="120" />
+            <el-table-column prop="industry" label="所属行业" min-width="120" />
+          </el-table>
+        </div>
+        <template #footer>
+          <el-button @click="showSectorTagDialog = false">关闭</el-button>
         </template>
       </el-dialog>
 
@@ -810,6 +807,32 @@ const sectorStocksLoading = ref(false)
 const sectorStocksList = ref([])
 const currentSectorName = ref('')
 const sectorStocksTotal = ref(0)
+
+// 点击所属板块 tag -> 该板块成分股（与元数据一致）+ 本股优先级
+const showSectorTagDialog = ref(false)
+const tagSector = ref(null)
+const tagStockCode = ref('')
+const tagSectorStocks = ref([])
+const tagSectorLoading = ref(false)
+const openSectorTagDetail = async (row, sector) => {
+  tagSector.value = sector
+  tagStockCode.value = row.code
+  tagSectorStocks.value = []
+  showSectorTagDialog.value = true
+  if (!sector.sector_code) return
+  tagSectorLoading.value = true
+  try {
+    const res = await getSectorStocks(sector.sector_code, { page: 1, page_size: 500 })
+    if (res.code === 200) {
+      tagSectorStocks.value = res.data?.stocks || res.data?.list || []
+    }
+  } catch (e) {
+    console.error('获取板块成分股失败:', e)
+    ElMessage.error('获取板块成分股失败')
+  } finally {
+    tagSectorLoading.value = false
+  }
+}
 
 // 标签管理
 const showTagDialog = ref(false)
