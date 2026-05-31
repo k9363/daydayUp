@@ -780,14 +780,16 @@ class FactorCalculator:
         else:
             df['remaining_deviation'] = 0.0
     
-    def calculate_sector_factors(self, stock_factors_df: pd.DataFrame, db_session) -> pd.DataFrame:
+    def calculate_sector_factors(self, stock_factors_df: pd.DataFrame, db_session, trade_date: str = None) -> pd.DataFrame:
         """
         计算板块因子得分
-        
+
         Args:
-            stock_factors_df: 包含股票因子的DataFrame
+            stock_factors_df: 包含股票因子的DataFrame（仅成交额前N的股票池）
             db_session: 数据库会话
-        
+            trade_date: 交易日期（YYYY-MM-DD）。提供时才能计算量价/广度类的
+                        全成分股板块因子（*_all），否则这些因子缺省为0。
+
         Returns:
             板块得分DataFrame
         """
@@ -859,7 +861,25 @@ class FactorCalculator:
             is_default=True,
             is_active=True
         ).first()
-        
+
+        # 量价/广度类板块因子（*_all）必须覆盖板块全部成分股，而不能只用成交额前N的股票池：
+        # 池内每只股本身就是放量个股，会让「量比」系统性偏高；且大量板块在池内只有1只股，
+        # 「上涨家数占比」退化成 0/1 二值——这正是板块量价得分异常的根因。
+        # 仅当默认表达式确实引用了 *_all 因子时才做这次较重的全成分股聚合，
+        # 避免拖慢不需要它的「综合得分」等表达式。
+        FULL_MEMBERSHIP_FACTOR_CODES = (
+            'sector_avg_change_all', 'sector_up_ratio_all',
+            'sector_total_amount_all', 'sector_amount_ma5_all',
+        )
+        expr_text = score_expr.expression if (score_expr and score_expr.expression) else ''
+        if trade_date and any(code in expr_text for code in FULL_MEMBERSHIP_FACTOR_CODES):
+            fm_factors = self._compute_full_membership_sector_factors(
+                list(sector_data.keys()), db_session, trade_date
+            )
+            for sc, vals in fm_factors.items():
+                if sc in sector_data:
+                    sector_data[sc].update(vals)
+
         # 构建板块DataFrame，同时添加 stock_count 和 top_stocks
         top30_codes = stock_factors_df.head(30)['stock_code'].tolist()
         
@@ -918,7 +938,104 @@ class FactorCalculator:
         sector_df['top_stocks'] = sector_df['top_stocks'].apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, list) else '[]')
         
         return sector_df
-    
+
+    def _compute_full_membership_sector_factors(self, sector_codes, db_session, trade_date: str) -> Dict:
+        """计算量价/广度类板块因子（覆盖板块全部成分股）。
+
+        返回 {sector_code: {factor_code: value}}，factor_code 为：
+          - sector_avg_change_all    : 全成分股当日涨跌幅均值
+          - sector_up_ratio_all      : 全成分股上涨家数占比
+          - sector_total_amount_all  : 全成分股当日成交额之和
+          - sector_amount_ma5_all    : 全成分股近5日均成交额之和（量比分母）
+
+        只统计当日有正常成交（turnover>0）的成分股，停牌股不计入。
+        """
+        import datetime as dt
+        from models.kline import StockSector, StockDailyKLine
+
+        if not sector_codes or not trade_date:
+            return {}
+
+        # 1. 板块 -> 全部成分股
+        member_rows = db_session.query(
+            StockSector.sector_code, StockSectorRelation.stock_code
+        ).join(
+            StockSectorRelation, StockSectorRelation.sector_id == StockSector.id
+        ).filter(
+            StockSector.sector_code.in_(list(sector_codes))
+        ).all()
+
+        sector_members = {}
+        all_codes = set()
+        for sector_code, stock_code in member_rows:
+            sector_members.setdefault(sector_code, []).append(stock_code)
+            all_codes.add(stock_code)
+        if not all_codes:
+            return {}
+        all_codes = list(all_codes)
+
+        # 2. 当日K线：成交额、涨跌幅
+        today_rows = db_session.query(
+            StockDailyKLine.stock_code,
+            StockDailyKLine.turnover,
+            StockDailyKLine.change_percent,
+        ).filter(
+            StockDailyKLine.stock_code.in_(all_codes),
+            StockDailyKLine.trade_date == trade_date,
+            StockDailyKLine.turnover.isnot(None),
+            StockDailyKLine.turnover > 0,
+        ).all()
+        today = {
+            r.stock_code: (float(r.turnover or 0), float(r.change_percent or 0))
+            for r in today_rows
+        }
+
+        # 3. 近5个交易日均成交额（含当日，排除停牌日）
+        start_str = (dt.datetime.strptime(trade_date, '%Y-%m-%d') - dt.timedelta(days=20)).strftime('%Y-%m-%d')
+        hist_rows = db_session.query(
+            StockDailyKLine.stock_code,
+            StockDailyKLine.turnover,
+        ).filter(
+            StockDailyKLine.stock_code.in_(all_codes),
+            StockDailyKLine.trade_date >= start_str,
+            StockDailyKLine.trade_date <= trade_date,
+            StockDailyKLine.turnover.isnot(None),
+            StockDailyKLine.turnover > 0,
+        ).order_by(
+            StockDailyKLine.stock_code, StockDailyKLine.trade_date.desc()
+        ).all()
+        hist = {}
+        for r in hist_rows:
+            hist.setdefault(r.stock_code, []).append(float(r.turnover or 0))
+        avg5 = {
+            code: (sum(vals[:5]) / 5 if len(vals) >= 5 else (sum(vals) / len(vals) if vals else 0))
+            for code, vals in hist.items()
+        }
+
+        # 4. 逐板块聚合（仅统计当日有成交的成分股，保证分子分母口径一致）
+        result = {}
+        for sector_code, members in sector_members.items():
+            traded = [c for c in members if c in today]
+            if not traded:
+                result[sector_code] = {
+                    'sector_avg_change_all': 0.0,
+                    'sector_up_ratio_all': 0.0,
+                    'sector_total_amount_all': 0.0,
+                    'sector_amount_ma5_all': 0.0,
+                }
+                continue
+            total_amount = sum(today[c][0] for c in traded)
+            avg_change = sum(today[c][1] for c in traded) / len(traded)
+            up_ratio = sum(1 for c in traded if today[c][1] > 0) / len(traded)
+            amount_ma5 = sum(avg5.get(c, 0) for c in traded)
+            result[sector_code] = {
+                'sector_avg_change_all': avg_change,
+                'sector_up_ratio_all': up_ratio,
+                'sector_total_amount_all': total_amount,
+                'sector_amount_ma5_all': amount_ma5,
+            }
+        return result
+
     def calculate_market_factors(self, trade_date: str, db_session) -> Dict:
         """
         计算大盘因子

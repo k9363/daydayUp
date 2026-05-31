@@ -978,7 +978,7 @@ class ReviewTaskService:
             logger.info(f"✅ 步骤4完成: 选出前10只股票: {top10_stocks[['stock_code', 'stock_name', 'total_score']].to_dict('records')}")
 
             # ========== 步骤5: 计算板块得分 ==========
-            sector_scores = factor_calculator.calculate_sector_factors(factors_df, db.session)
+            sector_scores = factor_calculator.calculate_sector_factors(factors_df, db.session, trade_date=trade_date)
             logger.info(f"✅ 步骤5完成: 计算了 {len(sector_scores)} 个板块的得分")
 
             # ========== 步骤6: 生成并保存分析结果 ==========
@@ -1128,7 +1128,7 @@ class ReviewTaskService:
 
             # ========== 步骤4: 计算板块得分 ==========
             logger.info(f"📊 步骤4: 计算板块得分")
-            sector_scores = factor_calculator.calculate_sector_factors(factors_df, db.session)
+            sector_scores = factor_calculator.calculate_sector_factors(factors_df, db.session, trade_date=trade_date)
 
             # ========== 步骤5: 保存结果 ==========
             logger.info(f"📊 步骤5: 保存分析结果")
