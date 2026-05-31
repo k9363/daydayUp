@@ -39,11 +39,13 @@ class SchedulerService:
                 replace_existing=True
             )
 
-            # 每日 17:30 通过 AKShare 增量补充板块（行业 + 概念）+ 关联 + 新股
-            # 触发时间紧贴每日复盘 18:00 之前，让复盘能用上当天新增的板块/股票
-            # supplement_*_from_akshare 内部有断点续传判断，重复跑只补缺失部分，开销可控
+            # 周一到周六 17:30 通过东财增量补充板块（行业 + 概念）+ 关联 + 新股
+            # 工作日紧贴 18:00 复盘前，让复盘用上当天新增板块/股票；
+            # 周六（非交易日、东财压力小）那次对概念板块触发 full_sync 全量比对，
+            # 补漏平日断点续传跳过的成分股增删/改名（concept 内按 weekday()==5 判定）
+            # supplement_*_from_akshare 内部有断点续传/增量 diff，重复跑只补差异，开销可控
             metadata_trigger = CronTrigger(
-                day_of_week='0-4',
+                day_of_week='0-5',
                 hour=17,
                 minute=30,
             )
@@ -80,7 +82,7 @@ class SchedulerService:
             logger.info(
                 "✅ 定时任务调度器初始化完成: "
                 "每 2 小时 :00 淘股吧热帖 / :05 特别关注 / "
-                "周一到周五 17:30 元数据补充 / 18:00 复盘"
+                "周一到周六 17:30 元数据补充(周六概念全量比对) / 周一到周五 18:00 复盘"
             )
         except ImportError:
             logger.warning("⚠️ APScheduler未安装，定时任务功能不可用")
