@@ -32,7 +32,12 @@
       </el-col>
       <el-col :span="6">
         <el-card shadow="hover" class="stat-card">
-          <el-statistic title="板块" :value="summary.sector_industry_count" />
+          <el-statistic title="行业板块" :value="summary.sector_industry_count" />
+        </el-card>
+      </el-col>
+      <el-col :span="6">
+        <el-card shadow="hover" class="stat-card">
+          <el-statistic title="概念板块" :value="summary.sector_concept_count" />
         </el-card>
       </el-col>
       <el-col :span="6">
@@ -48,6 +53,11 @@
         <div class="card-header">
           <span>板块列表</span>
           <div class="header-actions">
+            <el-radio-group v-model="sectorType" size="small" @change="handleSectorTypeChange">
+              <el-radio-button value="">全部</el-radio-button>
+              <el-radio-button value="industry">行业</el-radio-button>
+              <el-radio-button value="concept">概念</el-radio-button>
+            </el-radio-group>
             <el-input
               v-model="sectorSearch"
               placeholder="搜索板块名称"
@@ -171,7 +181,7 @@
               <el-tag
                 v-for="sector in row.sectors.slice(0, 3)"
                 :key="sector.sector_code"
-                type="info"
+                :type="sectorTagType(sector.sector_type)"
                 size="small"
                 class="sector-tag clickable"
                 @click="handleSectorTagClick(sector)"
@@ -412,7 +422,7 @@
               <el-tag
                 v-for="sector in row.sectors"
                 :key="sector.sector_code"
-                type="info"
+                :type="sectorTagType(sector.sector_type)"
                 size="small"
                 class="sector-tag clickable"
                 @click="handleSectorTagClick(sector)"
@@ -724,6 +734,7 @@ import {
 const summary = ref({
   stock_basic_count: 0,
   sector_industry_count: 0,
+  sector_concept_count: 0,
   stock_sector_relation_count: 0
 })
 
@@ -1047,6 +1058,18 @@ const loadSectors = async () => {
   } finally {
     sectorLoading.value = false
   }
+}
+
+const handleSectorTypeChange = () => {
+  sectorCurrentPage.value = 1
+  loadSectors()
+}
+
+// 板块标签按类型配色：行业=蓝(primary)，概念=绿(success)，未知=灰(info)
+const sectorTagType = (sType) => {
+  if (sType === 'concept') return 'success'
+  if (sType === 'industry') return 'primary'
+  return 'info'
 }
 
 // 查看成分股
