@@ -1276,6 +1276,23 @@ class ReviewTaskService:
                 if _suspended:
                     logger.info(f"跳过 {len(_suspended)} 只停牌/退市/次新股(最近K线早于{_cut}或无K线): {_suspended[:8]}")
                 missing_codes = [c for c in missing_codes if c not in _suspended]
+        # suspend_d 精确剔除「当日停牌」股：上面 10 天启发式判不出当日停牌（昨天还有 K 线、今天停），
+        # 这里用 tushare suspend_d（经 TA-CN）事前剔除，省掉为当日停牌股触发的无用同步尝试
+        if missing_codes:
+            try:
+                import requests as _rq
+                import os as _os
+                _tacn = _os.getenv("TACN_API_BASE", "http://host.docker.internal:8000").rstrip("/")
+                _td = str(trade_date)[:10].replace("-", "")
+                _r = _rq.get(f"{_tacn}/api/sync/suspend-list", params={"trade_date": _td}, timeout=15)
+                if _r.status_code == 200:
+                    _susp = set(_r.json().get("suspended") or [])
+                    if _susp:
+                        _b = len(missing_codes)
+                        missing_codes = [c for c in missing_codes if c not in _susp]
+                        logger.info(f"suspend_d 剔除当日停牌 {_b - len(missing_codes)} 只，剩 {len(missing_codes)}")
+            except Exception as _se:
+                logger.warning(f"suspend_d 剔除当日停牌失败（忽略，不影响主流程）: {_se}")
         logger.info(f"缺失 {len(missing_codes)} 只股票的 {trade_date} 日K数据(已排除停牌/退市)")
         logger.info(f"=== DEBUG: missing_codes前10: {missing_codes[:10]}")
 
