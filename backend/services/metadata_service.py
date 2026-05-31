@@ -876,13 +876,16 @@ class MetadataService:
         """
         if not code:
             return ''
-        if code.startswith('sh.') or code.startswith('sz.'):
+        if code.startswith(('sh.', 'sz.', 'bj.')):
             return code
         if len(code) == 6 and code.isdigit():
+            # 北交所：920xxx 新段 + 43/83/87/88 老段（必须在 6->sh / else->sz 之前判断，
+            # 否则 920/83/87/88 等非 6 开头会被一律误归 sz.，板块关联对不上 bj. 元数据/日线）
+            if code.startswith('92') or code.startswith(('4', '8')):
+                return f'bj.{code}'
             if code.startswith('6'):
                 return f'sh.{code}'
-            else:
-                return f'sz.{code}'
+            return f'sz.{code}'
         return code
     
     def supplement_industry_sectors_from_akshare(self, db_session=None):
