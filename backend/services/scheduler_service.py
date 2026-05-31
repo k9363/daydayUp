@@ -136,8 +136,12 @@ class SchedulerService:
                 industry = svc.supplement_industry_sectors_from_akshare(db.session)
                 logger.info(f"📥 [元数据补充] 行业完成: {industry}")
                 logger.info("📥 [元数据补充] 开始: 概念板块 + 成分股")
-                concept = svc.supplement_concept_sectors_from_akshare(db.session)
-                logger.info(f"📥 [元数据补充] 概念完成: {concept}")
+                # 全量比对低频化：周六（非交易日、东财访问压力小）做一次全量覆盖刷新，
+                # 补漏平日断点续传跳过的成分股增删/改名；其余日仅增量 + 时效板块每日刷
+                from datetime import datetime as _dt
+                _full = _dt.now().weekday() == 5  # 5 = 周六
+                concept = svc.supplement_concept_sectors_from_akshare(db.session, full_sync=_full)
+                logger.info(f"📥 [元数据补充] 概念完成(full_sync={_full}): {concept}")
                 # 个股列表补缺（新股/北交所）：源 TA-CN stock-list（tushare+东财最全，含当天上市新股）
                 # baostock 列表滞后/无北交所，靠这步每日补齐，新股上市当天即进元数据
                 logger.info("📥 [元数据补充] 开始: 个股列表（新股/北交所）")

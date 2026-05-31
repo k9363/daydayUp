@@ -663,12 +663,14 @@ def init_concept_from_akshare():
         JSON: 初始化结果
     """
     try:
+        # ?full=1 触发全量比对（所有板块重拉成分股并覆盖刷新，开销大，用于手动补漏/验证）
+        full = request.args.get('full', '').lower() in ('1', 'true', 'yes')
         service = get_metadata_service()
-        result = service.supplement_concept_sectors_from_akshare()
-        
+        result = service.supplement_concept_sectors_from_akshare(full_sync=full)
+
         return jsonify({
             'code': 200,
-            'message': '概念板块初始化完成',
+            'message': '概念板块初始化完成' + ('（全量）' if full else ''),
             'data': result
         })
         

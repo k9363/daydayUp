@@ -1038,13 +1038,15 @@ class MetadataService:
         
         return {'sectors': sector_result, 'relations': relation_result}
     
-    def supplement_concept_sectors_from_akshare(self, db_session=None):
+    def supplement_concept_sectors_from_akshare(self, db_session=None, full_sync=False):
         """
-        使用AKShare补充概念板块和成分股（支持断点续传）
-        
+        使用东方财富补充概念板块和成分股
+
         Args:
             db_session: 数据库会话
-            
+            full_sync: True=全量比对（所有板块重拉成分股并覆盖刷新，低频用，开销大）；
+                       False=增量（新板块/无关联板块补缺 + 时效性关键词板块每日覆盖刷新）
+
         Returns:
             dict: {'sectors': 板块结果, 'relations': 关联结果}
         """
@@ -1074,44 +1076,60 @@ class MetadataService:
 
             logger.info(f"获取到 {len(concept_list)} 个概念板块")
 
-            # 2. 获取已存在的板块列表（用于断点续传）
-            existing_sectors = db_session.query(StockSector.sector_name, StockSector.id).filter(
-                StockSector.sector_type == 'concept'
-            ).all()
-            existing_sector_names = {s.sector_name: s.id for s in existing_sectors}
-            logger.info(f"数据库已存在 {len(existing_sector_names)} 个概念板块")
+            # 2. 已存板块按 sector_code(con_BKxxxx) 建唯一键索引
+            #    用东财稳定的 BK 代码作 key：板块改名也能命中同一条而非重复新建（sector_name 会变、会重名）
+            existing_sectors = db_session.query(
+                StockSector.sector_code, StockSector.id
+            ).filter(StockSector.sector_type == 'concept').all()
+            existing_by_code = {s.sector_code: s.id for s in existing_sectors}
+            logger.info(f"数据库已存在 {len(existing_by_code)} 个概念板块")
 
             # 3. 统计已有关联关系的板块数量
             sectors_with_relations = db_session.query(StockSectorRelation.sector_id).distinct().count()
             logger.info(f"已有成分股关联的板块数量: {sectors_with_relations}")
 
-            # 时效性概念（昨日连板/涨停/新高/破净等，成分股每日变）每次覆盖刷新；其余断点续传
+            def _skey(ccode):
+                # 与落库时的 sector_code 规则保持一致
+                return f"con_{ccode[:10]}" if ccode else ''
+
+            # 筛选策略：
+            #   - 新板块（按 code 不存在）→ 处理
+            #   - 时效性概念（名字含关键词，成分股每日变）→ 每日覆盖刷新
+            #   - full_sync（低频全量比对）→ 所有板块重拉成分股并覆盖刷新，补漏平日跳过的增删/改名
+            #   - 否则断点续传：仅补无成分股关联的板块
             dynamic_kws = ('昨日', '今日', '连板', '涨停', '跌停', '新高', '新低', '近期', '破净', '热股')
             sectors_to_process = []
-            dynamic_codes = set()  # 需覆盖刷新（落库前先删旧关联）的板块 code
+            dynamic_codes = set()  # 需覆盖刷新（落库前先删旧关联）的板块 code(BKxxxx)
             for concept in concept_list:
                 cname = concept.get('concept', '')
-                if not cname:
+                ccode = concept.get('code', '')
+                if not cname or not ccode:
                     continue
+                skey = _skey(ccode)
                 is_dynamic = any(kw in cname for kw in dynamic_kws)
-                if cname not in existing_sector_names:
+                if skey not in existing_by_code:
                     sectors_to_process.append(concept)
                     if is_dynamic:
-                        dynamic_codes.add(concept.get('code', ''))
+                        dynamic_codes.add(ccode)
                 elif is_dynamic:
                     # 时效性概念：每日覆盖刷新（无论是否已有关联）
                     sectors_to_process.append(concept)
-                    dynamic_codes.add(concept.get('code', ''))
+                    dynamic_codes.add(ccode)
+                elif full_sync:
+                    # 全量比对：重拉并覆盖刷新
+                    sectors_to_process.append(concept)
+                    dynamic_codes.add(ccode)
                 else:
-                    sid = existing_sector_names[cname]
                     has_rel = db_session.query(StockSectorRelation).filter(
-                        StockSectorRelation.sector_id == sid
+                        StockSectorRelation.sector_id == existing_by_code[skey]
                     ).first()
                     if not has_rel:
                         sectors_to_process.append(concept)
 
-            logger.info(f"需要处理的概念板块数量: {len(sectors_to_process)} (总计 {len(concept_list)} 个)，"
-                        f"其中时效性概念 {len(dynamic_codes)} 个将覆盖刷新成分股")
+            logger.info(
+                f"需要处理的概念板块数量: {len(sectors_to_process)} (总计 {len(concept_list)} 个)，"
+                f"全量={full_sync}，其中覆盖刷新 {len(dynamic_codes)} 个"
+            )
 
             import time
             for i, concept in enumerate(sectors_to_process):
@@ -1134,13 +1152,17 @@ class MetadataService:
 
                 # 立即创建板块并添加关联
                 try:
-                    # 检查板块是否存在（从已存在的数据中查找）
+                    # 按 sector_code(con_BKxxxx) 唯一键查找，命中则更新（含改名同步）
+                    skey = f"con_{concept_code[:10]}" if concept_code else ''
                     sector = None
-                    if concept_name in existing_sector_names:
-                        sector = db_session.query(StockSector).get(existing_sector_names[concept_name])
+                    if skey in existing_by_code:
+                        sector = db_session.query(StockSector).get(existing_by_code[skey])
 
                     if sector:
-                        # 更新
+                        # 更新（板块改名时同步 sector_name）
+                        if sector.sector_name != concept_name:
+                            logger.info(f"  板块 {skey} 改名: {sector.sector_name} → {concept_name}")
+                            sector.sector_name = concept_name
                         sector.stock_count = len(stock_codes)
                         sector.update_time = datetime.now()
                         db_session.add(sector)
@@ -1155,7 +1177,7 @@ class MetadataService:
                     else:
                         # 新增
                         sector = StockSector(
-                            sector_code=f"con_{concept_code[:10] if concept_code else concept_name[:18]}",
+                            sector_code=skey,
                             sector_name=concept_name,
                             sector_type='concept',
                             stock_count=len(stock_codes),
@@ -1163,7 +1185,7 @@ class MetadataService:
                         db_session.add(sector)
                         db_session.flush()  # 获取 sector.id
                         sector_result['added'] += 1
-                        existing_sector_names[concept_name] = sector.id
+                        existing_by_code[skey] = sector.id
 
                     # 添加股票-板块关联
                     for scode in stock_codes:
