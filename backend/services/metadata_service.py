@@ -1085,14 +1085,23 @@ class MetadataService:
             sectors_with_relations = db_session.query(StockSectorRelation.sector_id).distinct().count()
             logger.info(f"已有成分股关联的板块数量: {sectors_with_relations}")
 
-            # 筛选待处理：新概念 或 已存在但无成分股关联（断点续传，对称 industry）
+            # 时效性概念（昨日连板/涨停/新高/破净等，成分股每日变）每次覆盖刷新；其余断点续传
+            dynamic_kws = ('昨日', '今日', '连板', '涨停', '跌停', '新高', '新低', '近期', '破净')
             sectors_to_process = []
+            dynamic_codes = set()  # 需覆盖刷新（落库前先删旧关联）的板块 code
             for concept in concept_list:
                 cname = concept.get('concept', '')
                 if not cname:
                     continue
+                is_dynamic = any(kw in cname for kw in dynamic_kws)
                 if cname not in existing_sector_names:
                     sectors_to_process.append(concept)
+                    if is_dynamic:
+                        dynamic_codes.add(concept.get('code', ''))
+                elif is_dynamic:
+                    # 时效性概念：每日覆盖刷新（无论是否已有关联）
+                    sectors_to_process.append(concept)
+                    dynamic_codes.add(concept.get('code', ''))
                 else:
                     sid = existing_sector_names[cname]
                     has_rel = db_session.query(StockSectorRelation).filter(
@@ -1101,7 +1110,8 @@ class MetadataService:
                     if not has_rel:
                         sectors_to_process.append(concept)
 
-            logger.info(f"需要处理的概念板块数量: {len(sectors_to_process)} (总计 {len(concept_list)} 个)")
+            logger.info(f"需要处理的概念板块数量: {len(sectors_to_process)} (总计 {len(concept_list)} 个)，"
+                        f"其中时效性概念 {len(dynamic_codes)} 个将覆盖刷新成分股")
 
             import time
             for i, concept in enumerate(sectors_to_process):
@@ -1135,6 +1145,13 @@ class MetadataService:
                         sector.update_time = datetime.now()
                         db_session.add(sector)
                         sector_result['updated'] += 1
+                        # 时效性概念：先删旧关联，下面按当前成分股重建（覆盖刷新，成分股每日变）
+                        if concept_code in dynamic_codes:
+                            _deleted = db_session.query(StockSectorRelation).filter(
+                                StockSectorRelation.sector_id == sector.id
+                            ).delete()
+                            if _deleted:
+                                logger.info(f"  时效概念 {concept_name} 删旧关联 {_deleted} 条，按当前成分股重建")
                     else:
                         # 新增
                         sector = StockSector(
