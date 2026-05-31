@@ -220,8 +220,8 @@ export function initFullFromAKShare(data = {}) {
 // 获取股票列表（包含所属板块信息）
 // type: 股票类型过滤 (stock-股票, index-指数, etf-ETF, 空=全部)
 // search: 搜索关键词（代码或名称）
-export function getStocks(type = '', search = '') {
-  const params = {}
+export function getStocks(type = '', search = '', page = 1, pageSize = 20) {
+  const params = { page, pageSize }
   if (type) {
     params.type = type
   }

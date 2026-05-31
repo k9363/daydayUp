@@ -836,35 +836,33 @@ def get_stocks_with_sectors():
             )
             logger.info(f"[stocks] 搜索过滤: {search}")
         
-        # 一次性获取所有股票
-        stocks = query.order_by(StockBasic.stock_code).all()
+        # 分页：先对股票分页，避免全表拉取（原来全表 ~5500 股票 + ~16722 关联全部序列化）
+        page = request.args.get('page', 1, type=int)
+        page_size = request.args.get('pageSize', 20, type=int)
+        total = query.count()
+        stocks = query.order_by(StockBasic.stock_code).offset(
+            (page - 1) * page_size
+        ).limit(page_size).all()
 
-        # 一次性获取所有关联关系
-        relations = db.session.query(StockSectorRelation).all()
-
-        # 一次性获取所有板块
-        sectors = db.session.query(StockSector).all()
-
-        logger.info(f"[stocks] 股票总数: {len(stocks)}, 关联关系总数: {len(relations)}, 板块总数: {len(sectors)}")
-
-        # 构建 sector_id -> sector_info 映射
-        sector_map = {s.id: {
-            'sector_code': s.sector_code,
-            'sector_name': s.sector_name,
-            'sector_type': s.sector_type
-        } for s in sectors}
-
-        # 构建 stock_code -> [sectors] 映射
+        # 只查当页股票的板块关联（IN 当页代码，走索引），不再全表扫 stock_sector_relation
+        page_codes = [s.stock_code for s in stocks]
         stock_sectors_map = {}
-        for rel in relations:
-            if rel.stock_code not in stock_sectors_map:
-                stock_sectors_map[rel.stock_code] = []
-            if rel.sector_id in sector_map:
-                stock_sectors_map[rel.stock_code].append(sector_map[rel.sector_id])
+        if page_codes:
+            relations = db.session.query(StockSectorRelation).filter(
+                StockSectorRelation.stock_code.in_(page_codes)
+            ).all()
+            sector_ids = {r.sector_id for r in relations}
+            sectors = (db.session.query(StockSector)
+                       .filter(StockSector.id.in_(sector_ids)).all()) if sector_ids else []
+            sector_map = {s.id: {
+                'sector_code': s.sector_code,
+                'sector_name': s.sector_name,
+                'sector_type': s.sector_type,
+            } for s in sectors}
+            for rel in relations:
+                if rel.sector_id in sector_map:
+                    stock_sectors_map.setdefault(rel.stock_code, []).append(sector_map[rel.sector_id])
 
-        logger.info(f"[stocks] 有板块关联的股票数: {len(stock_sectors_map)}")
-
-        # 构建结果
         result = []
         for stock in stocks:
             result.append({
@@ -882,19 +880,16 @@ def get_stocks_with_sectors():
                 'total_market_value': float(stock.total_market_value) if stock.total_market_value else None,
                 'circulate_market_value': float(stock.circulate_market_value) if stock.circulate_market_value else None,
                 'update_time': stock.update_time.isoformat() if stock.update_time else None,
-                'sectors': stock_sectors_map.get(stock.stock_code, [])
+                'sectors': stock_sectors_map.get(stock.stock_code, []),
             })
-
-        # 调试：打印前3条数据
-        if result:
-            logger.info(f"[stocks] 返回数据预览: {result[0]}")
-            if len(result) > 1 and result[1].get('sectors'):
-                logger.info(f"[stocks] 第二条有sectors: {result[1]}")
 
         return jsonify({
             'code': 200,
             'message': '操作成功',
-            'data': result
+            'data': result,
+            'total': total,
+            'page': page,
+            'pageSize': page_size,
         })
 
     except Exception as e:

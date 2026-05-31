@@ -120,7 +120,7 @@
               size="small"
               style="width: 150px"
               @input="handleStockSearch"
-              @clear="loadStocks"
+              @clear="handleStockSearch"
             >
               <template #prefix>
                 <el-icon><Search /></el-icon>
@@ -1117,21 +1117,15 @@ const handleStockSizeChange = (size) => {
 
 // 加载股票列表（分页）
 const loadStocks = async () => {
-  console.log('loadStocks called, search:', stockSearch.value, 'type:', stockTypeFilter.value)
   stockListLoading.value = true
   try {
-    const res = await getStocks(stockTypeFilter.value, stockSearch.value)
-    console.log('loadStocks response, count:', res.data?.length || 0)
+    // 后端分页：只取当页 + 当页股票的板块关联（不再全表拉 ~5500 股票 + ~16722 关联）
+    const res = await getStocks(stockTypeFilter.value, stockSearch.value, stockCurrentPage.value, stockPageSize.value)
     if (res.code === 200) {
-      const allStocks = res.data || []
-      stockTotal.value = allStocks.length
-      // 分页处理
-      const start = (stockCurrentPage.value - 1) * stockPageSize.value
-      const end = start + stockPageSize.value
-      stockList.value = allStocks.slice(start, end)
-      
-      // 加载所有股票的标签
-      await loadBatchStockTags(allStocks.map(s => s.stock_code))
+      stockList.value = res.data || []
+      stockTotal.value = res.total || 0
+      // 只加载当页股票的标签
+      await loadBatchStockTags(stockList.value.map(s => s.stock_code))
     }
   } catch (error) {
     console.error('获取股票列表失败:', error)
