@@ -1054,14 +1054,14 @@ class MetadataService:
             db_session = db.session
         
         sector_result = {'added': 0, 'updated': 0, 'skipped': 0}
-        relation_result = {'added': 0, 'updated': 0, 'skipped': 0}
-        
+        relation_result = {'added': 0, 'updated': 0, 'skipped': 0, 'removed': 0}
+
         try:
             aks = self._get_eastmoney_service()
             if not aks:
                 logger.warning("AKShare 服务不可用")
                 return {'sectors': sector_result, 'relations': relation_result}
-            
+
             logger.info("开始通过东方财富补充概念板块...")
 
             # 东方财富 API 不支持按概念过滤成分股，需要遍历每个概念
@@ -1092,14 +1092,13 @@ class MetadataService:
                 # 与落库时的 sector_code 规则保持一致
                 return f"con_{ccode[:10]}" if ccode else ''
 
-            # 筛选策略：
+            # 筛选策略（落库统一走关联层增量 diff，未变动不写）：
             #   - 新板块（按 code 不存在）→ 处理
-            #   - 时效性概念（名字含关键词，成分股每日变）→ 每日覆盖刷新
-            #   - full_sync（低频全量比对）→ 所有板块重拉成分股并覆盖刷新，补漏平日跳过的增删/改名
+            #   - 时效性概念（名字含关键词，成分股每日变）→ 每日 diff
+            #   - full_sync（低频全量比对）→ 所有板块重拉成分股做 diff，补漏平日跳过的增删/改名
             #   - 否则断点续传：仅补无成分股关联的板块
             dynamic_kws = ('昨日', '今日', '连板', '涨停', '跌停', '新高', '新低', '近期', '破净', '热股')
             sectors_to_process = []
-            dynamic_codes = set()  # 需覆盖刷新（落库前先删旧关联）的板块 code(BKxxxx)
             for concept in concept_list:
                 cname = concept.get('concept', '')
                 ccode = concept.get('code', '')
@@ -1108,27 +1107,18 @@ class MetadataService:
                 skey = _skey(ccode)
                 is_dynamic = any(kw in cname for kw in dynamic_kws)
                 if skey not in existing_by_code:
-                    sectors_to_process.append(concept)
-                    if is_dynamic:
-                        dynamic_codes.add(ccode)
-                elif is_dynamic:
-                    # 时效性概念：每日覆盖刷新（无论是否已有关联）
-                    sectors_to_process.append(concept)
-                    dynamic_codes.add(ccode)
-                elif full_sync:
-                    # 全量比对：重拉并覆盖刷新
-                    sectors_to_process.append(concept)
-                    dynamic_codes.add(ccode)
+                    sectors_to_process.append(concept)        # 新板块
+                elif is_dynamic or full_sync:
+                    sectors_to_process.append(concept)        # 时效板块每日 / 全量比对
                 else:
                     has_rel = db_session.query(StockSectorRelation).filter(
                         StockSectorRelation.sector_id == existing_by_code[skey]
                     ).first()
                     if not has_rel:
-                        sectors_to_process.append(concept)
+                        sectors_to_process.append(concept)    # 断点续传补缺
 
             logger.info(
-                f"需要处理的概念板块数量: {len(sectors_to_process)} (总计 {len(concept_list)} 个)，"
-                f"全量={full_sync}，其中覆盖刷新 {len(dynamic_codes)} 个"
+                f"需要处理的概念板块数量: {len(sectors_to_process)} (总计 {len(concept_list)} 个)，全量={full_sync}"
             )
 
             import time
@@ -1167,13 +1157,6 @@ class MetadataService:
                         sector.update_time = datetime.now()
                         db_session.add(sector)
                         sector_result['updated'] += 1
-                        # 时效性概念：先删旧关联，下面按当前成分股重建（覆盖刷新，成分股每日变）
-                        if concept_code in dynamic_codes:
-                            _deleted = db_session.query(StockSectorRelation).filter(
-                                StockSectorRelation.sector_id == sector.id
-                            ).delete()
-                            if _deleted:
-                                logger.info(f"  时效概念 {concept_name} 删旧关联 {_deleted} 条，按当前成分股重建")
                     else:
                         # 新增
                         sector = StockSector(
@@ -1187,25 +1170,28 @@ class MetadataService:
                         sector_result['added'] += 1
                         existing_by_code[skey] = sector.id
 
-                    # 添加股票-板块关联
-                    for scode in stock_codes:
-                        if not scode:
-                            continue
-                        exists = db_session.query(StockSectorRelation).filter(
-                            StockSectorRelation.stock_code == scode,
+                    # 关联层增量 diff：仅 INSERT 新进、仅 DELETE 移出，未变动不写
+                    new_codes = {c for c in stock_codes if c}
+                    old_codes = {
+                        r.stock_code for r in db_session.query(StockSectorRelation.stock_code).filter(
                             StockSectorRelation.sector_id == sector.id
-                        ).first()
+                        ).all()
+                    }
+                    to_add = new_codes - old_codes
+                    to_del = old_codes - new_codes
+                    for scode in to_add:
+                        db_session.add(StockSectorRelation(stock_code=scode, sector_id=sector.id))
+                    if to_del:
+                        db_session.query(StockSectorRelation).filter(
+                            StockSectorRelation.sector_id == sector.id,
+                            StockSectorRelation.stock_code.in_(to_del)
+                        ).delete(synchronize_session=False)
+                    relation_result['added'] += len(to_add)
+                    relation_result['removed'] += len(to_del)
+                    relation_result['skipped'] += len(new_codes & old_codes)
+                    if to_add or to_del:
+                        logger.info(f"  板块 {concept_name} 成分股 diff: +{len(to_add)} -{len(to_del)} (不变 {len(new_codes & old_codes)})")
 
-                        if not exists:
-                            relation = StockSectorRelation(
-                                stock_code=scode,
-                                sector_id=sector.id
-                            )
-                            db_session.add(relation)
-                            relation_result['added'] += 1
-                        else:
-                            relation_result['skipped'] += 1
-                    
                     # 每获取一个概念就提交
                     db_session.commit()
                     logger.info(f"✅ 概念 {concept_name} 落库完成: {len(stock_codes)} 只成分股")
@@ -1215,7 +1201,7 @@ class MetadataService:
                     logger.error(f"❌ 概念 {concept_name} 落库失败: {sector_error}")
                     sector_result['skipped'] += 1
             
-            logger.info(f"✅ 全部概念板块补充完成: 新增{sector_result['added']}个板块, 更新{sector_result['updated']}个板块, 新增{relation_result['added']}条关联")
+            logger.info(f"✅ 全部概念板块补充完成: 新增{sector_result['added']}个板块, 更新{sector_result['updated']}个板块, 关联 +{relation_result['added']} -{relation_result['removed']} (不变{relation_result['skipped']})")
             
         except Exception as e:
             db_session.rollback()
