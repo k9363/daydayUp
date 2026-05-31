@@ -2183,13 +2183,24 @@ class ReviewTaskService:
         sector_map = {}  # stock_code -> sector_names
         try:
             from models.kline import StockSectorRelation, StockSector
-            relations = db.session.query(StockSectorRelation.stock_code, StockSector.sector_name).join(
+            relations = db.session.query(
+                StockSectorRelation.stock_code, StockSectorRelation.priority,
+                StockSector.sector_name, StockSector.sector_type, StockSector.sector_code
+            ).join(
                 StockSector, StockSector.id == StockSectorRelation.sector_id
             ).filter(StockSectorRelation.stock_code.in_(stock_codes)).all()
-            for stock_code, sector_name in relations:
+            for stock_code, priority, sector_name, sector_type, sector_code in relations:
                 if stock_code not in sector_map:
                     sector_map[stock_code] = []
-                sector_map[stock_code].append(sector_name)
+                sector_map[stock_code].append({
+                    'sector_name': sector_name,
+                    'sector_type': sector_type,
+                    'sector_code': sector_code,
+                    'priority': priority or 0,
+                })
+            # 每只股票的板块按人工优先级降序（与元数据/个股板块关联一致）
+            for _c in sector_map:
+                sector_map[_c].sort(key=lambda x: -(x.get('priority') or 0))
         except Exception as e:
             logger.warning(f"获取板块信息失败: {e}")
 
@@ -2201,7 +2212,7 @@ class ReviewTaskService:
         
         for _, row in top_df.iterrows():  # 遍历全部100只
             stock_code = row.get('stock_code', '')
-            sector_info = ','.join(sector_map.get(stock_code, []))
+            sector_info = ','.join([_s['sector_name'] for _s in sector_map.get(stock_code, [])])
 
             # 直接使用 K 线数据中的股票名称
             stock_name = stock_name_map_from_kline.get(stock_code, '')
@@ -2218,6 +2229,7 @@ class ReviewTaskService:
                 'code': stock_code,
                 'name': stock_name,
                 'sector': sector_info,
+                'sectors': sector_map.get(stock_code, []),
                 'industry': industry,
                 'amount': float(row['turnover']) / 100000000 if pd.notna(row['turnover']) else 0,
                 'turnover': float(row['turnover']) / 100000000 if pd.notna(row['turnover']) else 0,
@@ -2304,7 +2316,7 @@ class ReviewTaskService:
         top10_factors_detail = []
         for _, row in factors_df.head(10).iterrows():
             stock_code = row.get('stock_code', '')
-            sector_info = ','.join(sector_map.get(stock_code, []))
+            sector_info = ','.join([_s['sector_name'] for _s in sector_map.get(stock_code, [])])
             
             # 依次尝试从 K线数据、factors_df、元数据表获取名称
             stock_name = stock_name_map.get(stock_code, '')
@@ -2344,6 +2356,7 @@ class ReviewTaskService:
                 'code': stock_code,
                 'name': stock_name,
                 'sector': sector_info,
+                'sectors': sector_map.get(stock_code, []),
                 'industry': '',
                 'amount': float(row.get('turnover', 0)) / 100000000 if pd.notna(row.get('turnover', 0)) else 0,
                 'changePercent': float(row.get('change_percent', 0)),

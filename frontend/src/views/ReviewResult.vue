@@ -146,7 +146,41 @@
               {{ formatAmount(row.amount || row.turnover || 0) }}
             </template>
           </el-table-column>
-          <el-table-column prop="sector" label="所属板块" min-width="100" />
+          <el-table-column label="所属板块" min-width="280">
+            <template #default="{ row }">
+              <div v-if="row.sectors && row.sectors.length > 0">
+                <el-popover
+                  v-for="sector in row.sectors"
+                  :key="sector.sector_code"
+                  trigger="click"
+                  :width="230"
+                  placement="top"
+                >
+                  <template #reference>
+                    <el-tag
+                      :type="sectorTagType(sector.sector_type)"
+                      size="small"
+                      :effect="sector.priority > 0 ? 'dark' : 'light'"
+                      class="sector-tag clickable"
+                    >
+                      {{ sector.sector_name }}<template v-if="sector.priority > 0"> ·{{ sector.priority }}</template>
+                    </el-tag>
+                  </template>
+                  <div>
+                    <div style="font-weight:600;margin-bottom:6px">{{ sector.sector_name }}</div>
+                    <div style="display:flex;align-items:center;gap:6px">
+                      <span>优先级</span>
+                      <el-select :model-value="sector.priority || 0" size="small" style="width:80px"
+                                 @change="(v) => updateSectorPriority(sector, v, row.code)">
+                        <el-option v-for="n in 11" :key="n - 1" :value="n - 1" :label="String(n - 1)" />
+                      </el-select>
+                    </div>
+                  </div>
+                </el-popover>
+              </div>
+              <span v-else>{{ row.sector || '-' }}</span>
+            </template>
+          </el-table-column>
           <el-table-column label="标签" min-width="150">
             <template #default="{ row }">
               <div v-if="stockTags[row.code] && stockTags[row.code].length > 0" class="stock-tag-list">
@@ -1212,10 +1246,17 @@ const handleAddToSector = async () => {
 }
 
 // 从板块移除股票
-const updateSectorPriority = async (sector, priority) => {
+// 板块标签按类型配色（行业=蓝/概念=绿/未知=灰），与元数据管理一致
+const sectorTagType = (sType) => {
+  if (sType === 'concept') return 'success'
+  if (sType === 'industry') return 'primary'
+  return 'info'
+}
+
+const updateSectorPriority = async (sector, priority, stockCode) => {
   try {
     const res = await updateRelationPriority({
-      stock_code: currentSectorStock.value.code,
+      stock_code: stockCode || currentSectorStock.value?.code,
       sector_code: sector.sector_code,
       priority
     })
