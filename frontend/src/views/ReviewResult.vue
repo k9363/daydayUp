@@ -148,9 +148,9 @@
           </el-table-column>
           <el-table-column label="所属板块" min-width="280">
             <template #default="{ row }">
-              <div v-if="row.sectors && row.sectors.length > 0">
+              <div v-if="rowSectors(row.code).length > 0">
                 <el-popover
-                  v-for="sector in row.sectors"
+                  v-for="sector in rowSectors(row.code)"
                   :key="sector.sector_code"
                   trigger="click"
                   :width="230"
@@ -477,9 +477,9 @@
           <el-table-column prop="name" label="名称" width="120" />
           <el-table-column label="所属板块" min-width="320">
             <template #default="{ row }">
-              <div v-if="row.sectors && row.sectors.length > 0">
+              <div v-if="rowSectors(row.code).length > 0">
                 <el-popover
-                  v-for="sector in row.sectors"
+                  v-for="sector in rowSectors(row.code)"
                   :key="sector.sector_code"
                   trigger="click"
                   :width="230"
@@ -1359,6 +1359,12 @@ const sectorTagType = (sType) => {
   return 'info'
 }
 
+// 股票所属板块（结构化，来自元数据，按人工优先级降序）——与「元数据管理」展示一致
+const rowSectors = (code) => {
+  const list = stockSectorsMap.value[code] || []
+  return [...list].sort((a, b) => (b.priority || 0) - (a.priority || 0))
+}
+
 const updateSectorPriority = async (sector, priority, stockCode) => {
   try {
     const res = await updateRelationPriority({
@@ -1627,11 +1633,17 @@ const fetchChartData = async () => {
       }
       
       // 加载股票标签
-      const stockCodes = (chartData.value?.top10FactorStocks || []).map(s => s.code)
-      if (stockCodes.length > 0) {
-        await loadBatchStockTags(stockCodes)
-        // 批量加载股票板块
-        await loadBatchStockSectors(stockCodes)
+      const top10Codes = (chartData.value?.top10FactorStocks || []).map(s => s.code)
+      if (top10Codes.length > 0) {
+        await loadBatchStockTags(top10Codes)
+      }
+      // 批量加载股票板块：覆盖前10因子股 + 成交额Top100明细，二表所属板块均按元数据结构化展示
+      const sectorCodes = [...new Set([
+        ...top10Codes,
+        ...(chartData.value?.top100Detail || []).map(s => s.code)
+      ].filter(Boolean))]
+      if (sectorCodes.length > 0) {
+        await loadBatchStockSectors(sectorCodes)
       }
     } else {
       error.value = result.message || '获取数据失败'
