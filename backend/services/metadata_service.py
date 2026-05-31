@@ -1028,7 +1028,7 @@ class MetadataService:
                 
                 # 添加延时，避免请求过快
                 import time
-                time.sleep(1)
+                time.sleep(2)
 
             logger.info(f"✅ 行业板块补充完成: 处理{sector_result['added'] + sector_result['updated']}个板块, 新增{relation_result['added']}条关联, 跳过{sector_result['skipped']}个")
             
@@ -1119,7 +1119,7 @@ class MetadataService:
                     self._convert_code_to_baostock_format(s.get('code', ''))
                     for s in stocks if s.get('code')
                 })
-                time.sleep(0.4)
+                time.sleep(2)
                 logger.info(f"  概念 {concept_name} 包含 {len(stock_codes)} 只成分股，立即落库...")
 
                 # 立即创建板块并添加关联
