@@ -1194,60 +1194,18 @@ const sendEmail = async () => {
 
 // 点击查看板块成分股
 const handleShowSectorStocks = async (row) => {
-  console.log('点击板块股票数量, row:', row)
-  // 优先使用后端返回的前30股票列表
-  if (row.topStocks && row.topStocks.length > 0) {
-    console.log('使用topStocks数据:', row.topStocks)
-    sectorStocksList.value = row.topStocks.map(s => ({
-      stock_code: s.code,
-      stock_name: s.name,
-      total_score: s.totalScore,
-      rank: s.rank
-    }))
-    sectorStocksTotal.value = row.topStocks.length
-    currentSectorName.value = row.sector || row.name
-    showSectorStocksDialog.value = true
-    return
-  }
-  
-  // 兼容处理：sectorCode 可能不存在，尝试从 sector 获取
-  let sectorCode = row.sectorCode || row.sector_code || ''
-  
-  if (!sectorCode && row.sector) {
-    // 如果没有 sectorCode，尝试从后端获取
-    try {
-      const res = await getSectorStocks('', { sector_name: row.sector })
-      const list = res.data?.stocks || res.data?.list || []
-      if (res.code === 200 && list.length > 0) {
-        sectorStocksList.value = list
-        sectorStocksTotal.value = res.data.total || list.length
-        currentSectorName.value = row.sector
-        showSectorStocksDialog.value = true
-        return
-      }
-    } catch (e) {
-      console.error('按名称查询板块失败:', e)
-    }
-    ElMessage.warning('板块代码不存在')
-    return
-  }
-  
-  currentSectorName.value = row.sector
+  // 只展示「参与复盘计算（成交额 top100）」的成分股 —— 它们才有得分。
+  // 不再 fallback 拉全部成分股：没进 top100 的没参与因子计算、得分恒为 0，展示出来只是一堆 0 干扰。
+  const tops = row.topStocks || []
+  sectorStocksList.value = tops.map(s => ({
+    stock_code: s.code,
+    stock_name: s.name,
+    total_score: s.totalScore,
+    rank: s.rank
+  }))
+  sectorStocksTotal.value = tops.length
+  currentSectorName.value = row.sector || row.name
   showSectorStocksDialog.value = true
-  sectorStocksLoading.value = true
-  
-  try {
-    const res = await getSectorStocks(sectorCode, { page: 1, page_size: 100 })
-    if (res.code === 200) {
-      sectorStocksList.value = res.data?.stocks || res.data?.list || []
-      sectorStocksTotal.value = res.data?.total || sectorStocksList.value.length
-    }
-  } catch (error) {
-    console.error('获取板块成分股失败:', error)
-    ElMessage.error('获取板块成分股失败')
-  } finally {
-    sectorStocksLoading.value = false
-  }
 }
 
 // 格式化金额（后端已转为亿，直接展示）
