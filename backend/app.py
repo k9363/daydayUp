@@ -47,23 +47,19 @@ _baostock_lg = None
 
 
 def _init_baostock_login():
-    """应用启动时初始化 Baostock 登录（带重试）"""
-    global _baostock_lg
-    import baostock as bs
-    import time
+    """应用启动时初始化 Baostock 登录（共享进程级锁 + 重试）。
 
-    max_retries = 3
-    for attempt in range(1, max_retries + 1):
-        _baostock_lg = bs.login()
-        if _baostock_lg.error_code == '0':
-            logging.info("✅ Baostock 已登录（应用全局会话）")
-            return
-        logging.warning(
-            f"⚠️ Baostock 初始登录失败（{attempt}/{max_retries}）: {_baostock_lg.error_msg}"
-        )
-        if attempt < max_retries:
-            time.sleep(3)
-    logging.error("❌ Baostock 多次登录失败，定时任务可能无法正常运行")
+    用 safe_bs_login（services.baostock_lock）统一登录：后台启动线程、复盘同步线程、
+    定时任务线程共用一把进程级锁串行化 bs.login()，避免并发撞同一全局 socket 导致
+    "网络接收错误"（这是 2026-05-26 启动登录改后台线程后才暴露的并发问题）。
+    """
+    global _baostock_lg
+    try:
+        from services.baostock_lock import safe_bs_login
+        _baostock_lg = safe_bs_login()
+        logging.info("✅ Baostock 已登录（应用全局会话）")
+    except Exception as e:
+        logging.error(f"❌ Baostock 多次登录失败，兜底功能可能不可用（不影响 tushare 主路径）: {e}")
 
 
 def _cleanup_baostock():

@@ -66,11 +66,10 @@ class DataSyncService:
         self._consecutive_timeouts = 0
 
     def login(self):
-        """登录Baostock，如果已登录则跳过"""
+        """登录Baostock（共享进程级锁 + 重试，避免多线程并发 login 撞同一全局会话）"""
         if self.lg is None or not self.lg.error_code == '0':
-            self.lg = bs.login()
-            if self.lg.error_code != '0':
-                raise Exception(f"Baostock登录失败: {self.lg.error_msg}")
+            from services.baostock_lock import safe_bs_login
+            self.lg = safe_bs_login()
         return True
 
     def logout(self):
