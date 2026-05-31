@@ -964,7 +964,7 @@ class MetadataService:
                 logger.info(f"[{i+1}/{len(sectors_to_process)}] 获取行业 {industry_name} 的成分股...")
                 
                 # 获取该行业的成分股
-                stocks = aks.get_industry_stocks(industry_name)
+                stocks = aks.get_industry_stocks(item.get('code', ''))
                 stock_codes = []
                 for stock in stocks:
                     code = self._convert_code_to_baostock_format(stock.get('code', ''))
@@ -1085,62 +1085,42 @@ class MetadataService:
             sectors_with_relations = db_session.query(StockSectorRelation.sector_id).distinct().count()
             logger.info(f"已有成分股关联的板块数量: {sectors_with_relations}")
 
-            # 4. 遍历每个概念，获取成分股
-            http = aks.http  # 使用服务类的 HTTP 实例
-
-            # 筛选出还没有成分股的板块
+            # 筛选待处理：新概念 或 已存在但无成分股关联（断点续传，对称 industry）
             sectors_to_process = []
             for concept in concept_list:
-                concept_name = concept.get('concept', '')  # 修复：使用 'concept' 而不是 'concept_name'
-                if concept_name and concept_name not in existing_sector_names:
+                cname = concept.get('concept', '')
+                if not cname:
+                    continue
+                if cname not in existing_sector_names:
                     sectors_to_process.append(concept)
-
-            # 已存在但没有成分股的板块也加入处理
-            for sector_name, sector_id in existing_sector_names.items():
-                has_relation = db_session.query(StockSectorRelation).filter(
-                    StockSectorRelation.sector_id == sector_id
-                ).first()
-                if not has_relation:
-                    concept = next((c for c in concept_list if c.get('concept') == sector_name), None)  # 修复：使用 'concept'
-                    if concept:
+                else:
+                    sid = existing_sector_names[cname]
+                    has_rel = db_session.query(StockSectorRelation).filter(
+                        StockSectorRelation.sector_id == sid
+                    ).first()
+                    if not has_rel:
                         sectors_to_process.append(concept)
-            
-            logger.info(f"需要处理的板块数量: {len(sectors_to_process)} (总计 {len(concept_list)} 个)")
 
+            logger.info(f"需要处理的概念板块数量: {len(sectors_to_process)} (总计 {len(concept_list)} 个)")
+
+            import time
             for i, concept in enumerate(sectors_to_process):
-                concept_name = concept.get('concept', '')  # 修复：使用 'concept' 而不是 'concept_name'
+                concept_name = concept.get('concept', '')
                 concept_code = concept.get('code', '')
 
-                if not concept_name:
+                if not concept_name or not concept_code:
                     continue
 
-                logger.info(f"[{i+1}/{len(sectors_to_process)}] 获取概念 {concept_name} 的成分股...")
+                logger.info(f"[{i+1}/{len(sectors_to_process)}] 获取概念 {concept_name}({concept_code}) 的成分股...")
 
-                try:
-                    # 直接调用 API 获取概念成分股
-                    data = http.request(
-                        fs="m:90+t:1+f:!50",
-                        fields="f2,f12,f14,f4,f8"
-                    )
-
-                    if data and data.get('data', {}).get('diff'):
-                        diff = data['data']['diff']
-                        stocks = []
-                        for item in diff:
-                            code = str(item.get('f12', ''))
-                            if code and len(code) == 6 and code.isdigit():
-                                stocks.append({
-                                    'code': code,
-                                    'name': str(item.get('f14', '')),
-                                })
-                        stock_codes = [self._convert_code_to_baostock_format(s['code']) for s in stocks if s.get('code')]
-                        logger.info(f"  概念 {concept_name} 包含 {len(stock_codes)} 只成分股，立即落库...")
-                    else:
-                        stock_codes = []
-
-                except Exception as e:
-                    logger.warning(f"  获取概念 {concept_name} 成分股失败: {e}")
-                    stock_codes = []
+                # 按板块代码 b:{BKxxxx} 取成分股（东财 push2 直连，akshare 已被反爬）
+                stocks = aks.get_concept_stocks(concept_code)
+                stock_codes = list({
+                    self._convert_code_to_baostock_format(s.get('code', ''))
+                    for s in stocks if s.get('code')
+                })
+                time.sleep(0.4)
+                logger.info(f"  概念 {concept_name} 包含 {len(stock_codes)} 只成分股，立即落库...")
 
                 # 立即创建板块并添加关联
                 try:

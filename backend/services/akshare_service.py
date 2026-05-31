@@ -866,131 +866,123 @@ class EastMoneyService:
             logger.error(f"AKShare 连接失败: {e}")
             return False
     
+    _EM_HOSTS = ('push2.eastmoney.com', '82.push2.eastmoney.com')
+    _EM_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://quote.eastmoney.com/',
+        'Accept': 'application/json, text/plain, */*',
+    }
+
+    def _em_clist(self, fs, fields='f12,f14', page_size=100, max_retry=4):
+        """直连东财 clist 接口，自动分页取全部 + 失败退避重试（东财对密集请求会临时
+        RemoteDisconnected 限流）。akshare 1.18.x 请求被反爬，端点本身正常，浏览器
+        UA + Referer 直连即可。返回 list[dict]（f12 代码 / f14 名称）。"""
+        import requests
+        import time
+        for host in self._EM_HOSTS:
+            try:
+                out = []
+                pn = 1
+                while True:
+                    r = None
+                    for attempt in range(max_retry):
+                        try:
+                            r = requests.get(
+                                'http://%s/api/qt/clist/get' % host,
+                                params={'pn': pn, 'pz': page_size, 'po': 1, 'np': 1,
+                                        'fs': fs, 'fields': fields, 'fid': 'f3'},
+                                headers=self._EM_HEADERS, timeout=12,
+                            )
+                            r.raise_for_status()
+                            break
+                        except Exception:
+                            if attempt == max_retry - 1:
+                                raise
+                            time.sleep(1.5 * (attempt + 1))
+                    data = (r.json() or {}).get('data') or {}
+                    diff = data.get('diff') or []
+                    if isinstance(diff, dict):
+                        diff = list(diff.values())
+                    out.extend(diff)
+                    total = data.get('total') or 0
+                    if not diff or len(out) >= total:
+                        break
+                    pn += 1
+                    time.sleep(0.5)
+                return out
+            except Exception as e:
+                logger.warning('东财 clist 请求失败 host=%s fs=%s: %s' % (host, fs, e))
+                continue
+        return []
+
     def get_industry_classify(self):
-        """获取行业分类列表 - 使用 AKShare"""
+        """获取行业分类列表（东财 push2 直连，m:90+t:2）。返回 [{'industry','code'(BKxxxx)}]。"""
         try:
-            self._ensure_connected()
-            logger.info("正在获取行业分类 (AKShare)...")
-            
-            # 调用 AKShare 原始 API
-            import akshare as ak
-            df = ak.stock_board_industry_name_em()
-            
-            logger.info(f"获取到 {len(df)} 条行业数据")
-            if len(df) > 0:
-                logger.debug(f"列名: {list(df.columns)}")
-                logger.debug(f"前2条数据: {df.head(2).to_dict()}")
-            
+            rows = self._em_clist('m:90+t:2', 'f12,f14')
             industries = []
-            for _, row in df.iterrows():
-                name = str(row.get('板块名称', row.get('同花顺行业', row.get('行业名称', '')))).strip()
-                if name and name not in ['nan', 'None', '']:
-                    industries.append({
-                        'industry': name,
-                        'code': '',
-                    })
-            
-            logger.info(f"解析到 {len(industries)} 个行业分类")
+            for r in rows:
+                name = str(r.get('f14') or '').strip()
+                code = str(r.get('f12') or '').strip()
+                if name and name not in ('nan', 'None'):
+                    industries.append({'industry': name, 'code': code})
+            logger.info('解析到 %d 个行业分类' % len(industries))
             return industries
         except Exception as e:
-            logger.error(f"获取行业分类失败: {e}")
+            logger.error('获取行业分类失败: %s' % e)
             return []
-    
-    def get_industry_stocks(self, industry_name):
-        """获取行业成分股 - 使用 AKShare"""
+
+    def get_industry_stocks(self, board_code):
+        """获取行业成分股（东财 push2 直连，b:{BKxxxx}）。入参板块代码 BKxxxx。返回 [{'code','name'}]。"""
         try:
-            self._ensure_connected()
-            logger.info(f"正在获取 {industry_name} 成分股 (AKShare)...")
-            
-            # 调用 AKShare 原始 API
-            import akshare as ak
-            df = ak.stock_board_industry_cons_em(symbol=industry_name)
-            
-            logger.info(f"获取到 {len(df)} 条股票数据")
-            if len(df) > 0:
-                logger.debug(f"列名: {list(df.columns)}")
-                logger.debug(f"前2条数据: {df.head(2).to_dict()}")
-            
+            if not board_code:
+                return []
+            rows = self._em_clist('b:%s+f:!50' % board_code, 'f12,f14')
             stocks = []
-            for _, row in df.iterrows():
-                code = str(row.get('代码', row.get('code', ''))).strip()
-                name = str(row.get('名称', row.get('name', ''))).strip()
-                if code and len(code) == 6 and code.isdigit():
-                    stocks.append({
-                        'code': code,
-                        'name': name,
-                        'industry': industry_name,
-                    })
-            
-            logger.info(f"解析到 {len(stocks)} 只成分股")
+            for r in rows:
+                code = str(r.get('f12') or '').strip()
+                name = str(r.get('f14') or '').strip()
+                if len(code) == 6 and code.isdigit():
+                    stocks.append({'code': code, 'name': name})
+            logger.info('板块 %s 解析到 %d 只成分股' % (board_code, len(stocks)))
             return stocks
         except Exception as e:
-            logger.error(f"获取 {industry_name} 成分股失败: {e}")
+            logger.error('获取板块 %s 成分股失败: %s' % (board_code, e))
             return []
-    
+
     def get_concept_classify(self):
-        """获取概念分类列表 - 使用 AKShare"""
+        """获取概念分类列表（东财 push2 直连，m:90+t:3）。返回 [{'concept','code'(BKxxxx)}]。"""
         try:
-            self._ensure_connected()
-            logger.info("正在获取概念分类 (AKShare)...")
-            
-            # 调用 AKShare 原始 API
-            import akshare as ak
-            df = ak.stock_board_concept_name_em()
-            
-            logger.info(f"获取到 {len(df)} 条概念数据")
-            if len(df) > 0:
-                logger.debug(f"列名: {list(df.columns)}")
-                logger.debug(f"前2条数据: {df.head(2).to_dict()}")
-            
+            rows = self._em_clist('m:90+t:3', 'f12,f14')
             concepts = []
-            for _, row in df.iterrows():
-                # 尝试多种可能的列名
-                name = str(row.get('概念名称') or row.get('concept_name') or row.get('板块名称') or row.get('name') or '').strip()
-                if name and name not in ['nan', 'None', '']:
-                    concepts.append({
-                        'concept': name,
-                        'code': row.get('概念代码', row.get('concept_code', row.get('板块代码', ''))),
-                    })
-            
-            logger.info(f"解析到 {len(concepts)} 个概念分类")
+            for r in rows:
+                name = str(r.get('f14') or '').strip()
+                code = str(r.get('f12') or '').strip()
+                if name and name not in ('nan', 'None'):
+                    concepts.append({'concept': name, 'code': code})
+            logger.info('解析到 %d 个概念分类' % len(concepts))
             return concepts
         except Exception as e:
-            logger.error(f"获取概念分类失败: {e}")
+            logger.error('获取概念分类失败: %s' % e)
             return []
-    
-    def get_concept_stocks(self, concept_name):
-        """获取概念成分股 - 使用 AKShare"""
+
+    def get_concept_stocks(self, board_code):
+        """获取概念成分股（东财 push2 直连，b:{BKxxxx}）。入参板块代码 BKxxxx。返回 [{'code','name'}]。"""
         try:
-            self._ensure_connected()
-            logger.info(f"正在获取 {concept_name} 成分股 (AKShare)...")
-            
-            # 调用 AKShare 原始 API
-            import akshare as ak
-            df = ak.stock_board_concept_cons_em(symbol=concept_name)
-            
-            logger.info(f"获取到 {len(df)} 条股票数据")
-            if len(df) > 0:
-                logger.debug(f"列名: {list(df.columns)}")
-                logger.debug(f"前2条数据: {df.head(2).to_dict()}")
-            
+            if not board_code:
+                return []
+            rows = self._em_clist('b:%s+f:!50' % board_code, 'f12,f14')
             stocks = []
-            for _, row in df.iterrows():
-                code = str(row.get('代码', row.get('code', ''))).strip()
-                name = str(row.get('名称', row.get('name', ''))).strip()
-                if code and len(code) == 6 and code.isdigit():
-                    stocks.append({
-                        'code': code,
-                        'name': name,
-                        'concept': concept_name,
-                    })
-            
-            logger.info(f"解析到 {len(stocks)} 只成分股")
+            for r in rows:
+                code = str(r.get('f12') or '').strip()
+                name = str(r.get('f14') or '').strip()
+                if len(code) == 6 and code.isdigit():
+                    stocks.append({'code': code, 'name': name})
+            logger.info('概念板块 %s 解析到 %d 只成分股' % (board_code, len(stocks)))
             return stocks
         except Exception as e:
-            logger.error(f"获取 {concept_name} 成分股失败: {e}")
+            logger.error('获取概念板块 %s 成分股失败: %s' % (board_code, e))
             return []
-    
+
     def get_stock_basics(self):
         """获取全部A股列表 - 使用 BaoStock 官方接口"""
         if bs is None:
