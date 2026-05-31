@@ -452,7 +452,7 @@
           <span>优先级</span>
           <el-select :model-value="tagActionSector.priority || 0" size="small" style="width:90px"
                      @change="(v) => updateSectorPriority(tagActionRow, tagActionSector, v)">
-            <el-option v-for="n in 11" :key="n - 1" :value="n - 1" :label="String(n - 1)" />
+            <el-option v-for="n in 11" :key="11 - n" :value="11 - n" :label="String(11 - n)" />
           </el-select>
         </div>
         <div>

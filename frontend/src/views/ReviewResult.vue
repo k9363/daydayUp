@@ -530,7 +530,7 @@
             <span style="color:var(--el-text-color-secondary)">本股优先级</span>
             <el-select :model-value="tagSector.priority || 0" size="small" style="width:90px"
                        @change="(v) => updateSectorPriority(tagSector, v, tagStockCode)">
-              <el-option v-for="n in 11" :key="n - 1" :value="n - 1" :label="String(n - 1)" />
+              <el-option v-for="n in 11" :key="11 - n" :value="11 - n" :label="String(11 - n)" />
             </el-select>
             <span style="margin-left:auto;color:var(--el-text-color-secondary)">共 {{ tagSectorTotal }} 只成分股</span>
           </div>
@@ -586,7 +586,7 @@
               </el-tag>
               <el-select :model-value="sector.priority || 0" size="small" style="width:64px"
                          @change="(v) => updateSectorPriority(sector, v)">
-                <el-option v-for="n in 11" :key="n - 1" :value="n - 1" :label="String(n - 1)" />
+                <el-option v-for="n in 11" :key="11 - n" :value="11 - n" :label="String(11 - n)" />
               </el-select>
             </div>
           </div>
