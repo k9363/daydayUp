@@ -424,17 +424,25 @@
           <!-- 已选板块 -->
           <div v-if="currentSectorStock && stockSectorsMap[currentSectorStock.code] && stockSectorsMap[currentSectorStock.code].length > 0" class="selected-sectors">
             <div class="section-title">已选板块：</div>
-            <el-tag
+            <div
               v-for="sector in stockSectorsMap[currentSectorStock.code]"
-              :key="sector.sector_name"
-              type="info"
-              size="large"
-              closable
-              class="sector-tag"
-              @close="handleRemoveFromSector(sector.sector_code)"
+              :key="sector.sector_code"
+              style="display:inline-flex;align-items:center;gap:6px;margin:0 10px 8px 0"
             >
-              {{ sector.sector_name }}
-            </el-tag>
+              <el-tag
+                :type="sector.sector_type === 'concept' ? 'success' : 'primary'"
+                size="large"
+                closable
+                class="sector-tag"
+                @close="handleRemoveFromSector(sector.sector_code)"
+              >
+                {{ sector.sector_name }}<template v-if="sector.priority > 0"> ·{{ sector.priority }}</template>
+              </el-tag>
+              <el-select :model-value="sector.priority || 0" size="small" style="width:64px"
+                         @change="(v) => updateSectorPriority(sector, v)">
+                <el-option v-for="n in 11" :key="n - 1" :value="n - 1" :label="String(n - 1)" />
+              </el-select>
+            </div>
           </div>
           <div v-else class="no-sectors">
             暂无所属板块
@@ -538,7 +546,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { Refresh, Grid, Monitor, Connection, Trophy, DocumentChecked, Edit, Delete, Check, Close, Message } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
-import { getSectorStocks, getAllSectors, getStockSectors, getBatchStockSectors, addStockToSector, removeStockFromSector, getTags, addTag, updateTag, deleteTag, addStockTag, removeStockTag, getBatchStockTags, saveDailyNote, getCycleByDate } from '@/api'
+import { getSectorStocks, getAllSectors, getStockSectors, getBatchStockSectors, addStockToSector, removeStockFromSector, getTags, addTag, updateTag, deleteTag, addStockTag, removeStockTag, getBatchStockTags, saveDailyNote, getCycleByDate, updateRelationPriority } from '@/api'
 import { useReviewData } from '@/composables/useReviewData'
 
 // 组件
@@ -1204,6 +1212,24 @@ const handleAddToSector = async () => {
 }
 
 // 从板块移除股票
+const updateSectorPriority = async (sector, priority) => {
+  try {
+    const res = await updateRelationPriority({
+      stock_code: currentSectorStock.value.code,
+      sector_code: sector.sector_code,
+      priority
+    })
+    if (res.code === 200) {
+      sector.priority = priority
+      ElMessage.success(`已设「${sector.sector_name}」优先级 ${priority}`)
+    } else {
+      ElMessage.error(res.message || '设置优先级失败')
+    }
+  } catch (e) {
+    ElMessage.error('设置优先级失败')
+  }
+}
+
 const handleRemoveFromSector = async (sectorCode) => {
   if (!currentSectorStock.value) return
   // 找到对应的 sector_id
