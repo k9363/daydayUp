@@ -808,11 +808,13 @@ class FactorCalculator:
         # 构建股票->板块映射
         stock_to_sector = {}
         sector_names = {}
+        sector_types = {}
         for rel, sector in relations:
             sector_code = sector.sector_code
             if sector_code not in stock_to_sector:
                 stock_to_sector[sector_code] = []
                 sector_names[sector_code] = sector.sector_name
+                sector_types[sector_code] = sector.sector_type
             stock_to_sector[sector_code].append(rel.stock_code)
         
         # 获取板块因子定义
@@ -903,6 +905,7 @@ class FactorCalculator:
             record = {
                 'sector_code': sector_code,
                 'sector_name': data.get('sector_name', sector_code),
+                'sector_type': sector_types.get(sector_code, 'industry'),
                 'stock_count': len(sector_stocks),
                 'top_stocks': top_stocks_list
             }
@@ -927,10 +930,9 @@ class FactorCalculator:
             # 使用默认计算
             sector_df['score'] = self._calculate_default_sector_scores(stock_factors_df, stock_to_sector)['score']
         
-        # 取前N
-        if score_expr and score_expr.top_n:
-            sector_df = sector_df.nlargest(score_expr.top_n, 'score')
-        
+        # 返回全量按得分排序的板块（不在此处按 top_n 截断）：
+        # 行业/概念需各自独立排名再各取前N，截断交由展示层（build_sector_score_result）
+        # 按 sector_type 分别 head(N) 完成，避免混合截断把概念板块挤掉。
         sector_df = sector_df.sort_values('score', ascending=False).reset_index(drop=True)
         
         # 将 top_stocks 转换为 JSON 字符串，避免 Pandas 序列化问题

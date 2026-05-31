@@ -558,6 +558,12 @@ def task_chart_data(task_id):
                     # 兼容字典和列表格式 - 前端期望 'sectors' 字段
                     if isinstance(sector_scores, dict):
                         chart_data['sectors'] = sector_scores.get('sectors', [])
+                        # 行业/概念分别排名的前N（页面左右两栏），及板块得分因子详情所需信息
+                        chart_data['sectorsIndustry'] = sector_scores.get('industry', [])
+                        chart_data['sectorsConcept'] = sector_scores.get('concept', [])
+                        chart_data['sectorScoreExpression'] = sector_scores.get('scoreExpression', '')
+                        chart_data['sectorScoreExpressionName'] = sector_scores.get('scoreExpressionName', '')
+                        chart_data['sectorScoreFactors'] = sector_scores.get('scoreFactors', [])
                     elif isinstance(sector_scores, list):
                         chart_data['sectors'] = sector_scores
                     else:

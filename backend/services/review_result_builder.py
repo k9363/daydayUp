@@ -19,6 +19,29 @@ class ReviewResultBuilder:
     def __init__(self, db_session):
         self.db = db_session
 
+    def _get_sector_score_expression_meta(self):
+        """返回默认板块得分表达式信息：(expression_text, expression_name, factor_meta)
+
+        factor_meta = [{'code': 因子代码, 'name': 因子名称}, ...]，按表达式 factors 列表顺序，
+        供前端「板块得分 -> 因子详情」树展示使用。
+        """
+        from models.expression import ScoreExpression
+        from models.factor import FactorDefine
+
+        expr = ScoreExpression.query.filter_by(
+            scope='sector', is_default=True, is_active=True
+        ).first()
+        if not expr:
+            return '', '', []
+
+        factor_codes = expr.factors if isinstance(expr.factors, list) else []
+        name_map = {}
+        if factor_codes:
+            for fd in FactorDefine.query.filter(FactorDefine.factor_code.in_(factor_codes)).all():
+                name_map[fd.factor_code] = fd.factor_name
+        factor_meta = [{'code': c, 'name': name_map.get(c, c)} for c in factor_codes]
+        return (expr.expression or ''), (expr.expression_name or ''), factor_meta
+
     def build_index_results(self, task, all_df: pd.DataFrame) -> List[Dict]:
         """
         构建指数行情结果
@@ -270,25 +293,47 @@ class ReviewResultBuilder:
         top30_codes = top30_stocks['stock_code'].tolist()
         sector_relations_map = self._get_sector_stocks_relation_map(top30_codes)
 
-        # 构建板块数据
-        top10_sectors = []
-        for _, row in sector_scores.head(TOP_N_FOR_DISPLAY).iterrows():
-            sector_name = row.get('sector_name', '')
-            sector_code = row.get('sector_code', '')
+        # 板块得分表达式 + 其引用的因子（用于「点击得分看因子详情」，与股票/大盘因子展示一致）
+        expression_text, expression_name, score_factor_meta = self._get_sector_score_expression_meta()
+        score_factor_codes = [f['code'] for f in score_factor_meta]
 
-            top10_sectors.append({
+        def _build_sector_item(row):
+            sector_name = row.get('sector_name', '')
+            # 该板块各引用因子的取值（用于因子详情树）
+            factor_values = {}
+            for code in score_factor_codes:
+                val = row.get(code)
+                if val is not None and not (isinstance(val, float) and pd.isna(val)):
+                    factor_values[code] = float(val)
+            return {
                 'sector': sector_name,
-                'sectorCode': sector_code,
+                'sectorCode': row.get('sector_code', ''),
                 'name': sector_name,
+                'sectorType': row.get('sector_type', 'industry'),
                 'count': int(row.get('stock_count', 0)),
                 'stockCount': int(row.get('stock_count', 0)),
                 'score': float(row.get('score', 0)),
+                'factorValues': factor_values,
                 'topStocks': json.loads(row.get('top_stocks', '[]')) if isinstance(row.get('top_stocks'), str) else (row.get('top_stocks', []) if isinstance(row.get('top_stocks'), list) else [])
-            })
+            }
+
+        # 全部已排序板块 -> item
+        all_items = [_build_sector_item(row) for _, row in sector_scores.iterrows()]
+
+        # 行业 / 概念 分别取前 N（页面左右两栏分别展示）
+        industry_sectors = [it for it in all_items if it['sectorType'] == 'industry'][:TOP_N_FOR_DISPLAY]
+        concept_sectors = [it for it in all_items if it['sectorType'] == 'concept'][:TOP_N_FOR_DISPLAY]
+        # 兼容旧前端：保留混合前N
+        top10_sectors = all_items[:TOP_N_FOR_DISPLAY]
 
         sector_result.detail_data = json.dumps({
             'type': 'sector_scores',
-            'sectors': top10_sectors
+            'sectors': top10_sectors,
+            'industry': industry_sectors,
+            'concept': concept_sectors,
+            'scoreExpression': expression_text,
+            'scoreExpressionName': expression_name,
+            'scoreFactors': score_factor_meta,
         }, ensure_ascii=False)
         results.append(sector_result)
 

@@ -362,28 +362,105 @@
         </template>
       </el-dialog>
 
-      <!-- 板块详情表格 -->
-      <el-card shadow="hover" class="sector-table-card">
-        <template #header>
-          <span>板块统计详情</span>
+      <!-- 板块得分因子详情弹窗 - 与股票/大盘因子保持一致的树形结构 -->
+      <el-dialog
+        v-model="showSectorFactorDialog"
+        :title="currentSector ? `${currentSector.sector} 板块得分详情` : '板块因子'"
+        width="900px"
+        destroy-on-close
+      >
+        <div v-if="currentSector" class="factor-tree-dialog">
+          <!-- 综合得分展示 -->
+          <div class="total-score">
+            <span class="score-label">{{ sectorScoreExpressionName }}</span>
+            <span class="score-value">{{ Number(currentSector.score || 0).toFixed(2) }}</span>
+          </div>
+
+          <!-- 树形结构 -->
+          <div class="tree-visualization">
+            <el-tree
+              :data="sectorFactorTreeData"
+              :props="treeVisualProps"
+              default-expand-all
+              node-key="id"
+              class="factor-visual-tree"
+            >
+              <template #default="{ node, data }">
+                <div class="visual-node" :class="[data.levelClass, { 'has-value': data.value !== undefined }]">
+                  <span class="node-icon">
+                    <el-icon v-if="data.level === 1"><Monitor /></el-icon>
+                    <el-icon v-else-if="data.level === 2"><Connection /></el-icon>
+                    <el-icon v-else-if="data.level === 3"><Trophy /></el-icon>
+                  </span>
+                  <span class="node-content">
+                    <span class="node-label">{{ data.name }}</span>
+                    <span class="node-code">({{ data.code }})</span>
+                  </span>
+                  <span v-if="data.value !== undefined" class="node-value" :class="data.value >= 0 ? 'positive' : 'negative'">
+                    {{ data.value >= 0 ? '+' : '' }}{{ data.value.toFixed(2) }}
+                  </span>
+                  <span v-if="data.expression" class="node-formula">{{ data.expression }}</span>
+                </div>
+              </template>
+            </el-tree>
+          </div>
+
+          <!-- 图例说明 -->
+          <div class="tree-legend">
+            <span class="legend-item"><el-icon><Monitor /></el-icon> 因子</span>
+            <span class="legend-item"><el-icon><Trophy /></el-icon> 板块得分</span>
+          </div>
+        </div>
+        <template #footer>
+          <el-button @click="showSectorFactorDialog = false">关闭</el-button>
         </template>
-        <el-table :data="sectors" stripe style="width: 100%">
-          <el-table-column type="index" label="排名" width="80" align="center" />
-          <el-table-column prop="sector" label="板块" width="200" />
-          <el-table-column label="得分" width="100" align="center">
-            <template #default="{ row }">
-              <el-tag type="warning">{{ Math.round(row.score) }}</el-tag>
+      </el-dialog>
+
+      <!-- 板块统计详情：行业 / 概念 各自独立排名取前10，左右并排占满 -->
+      <el-row :gutter="16" class="sector-detail-row">
+        <el-col :xs="24" :md="12">
+          <el-card shadow="hover" class="sector-table-card">
+            <template #header>
+              <span>板块统计详情 · 行业</span>
             </template>
-          </el-table-column>
-          <el-table-column prop="count" label="股票数量" width="120" align="center">
-            <template #default="{ row }">
-              <el-tag type="info" class="clickable-tag" @click="handleShowSectorStocks(row)">
-                {{ row.count }}只
-              </el-tag>
+            <el-table :data="industrySectors" stripe style="width: 100%">
+              <el-table-column type="index" label="排名" width="70" align="center" />
+              <el-table-column prop="sector" label="板块" min-width="110" show-overflow-tooltip />
+              <el-table-column label="得分" width="90" align="center">
+                <template #default="{ row }">
+                  <el-tag type="warning" class="clickable-tag" @click="showSectorFactorTree(row)">{{ Math.round(row.score) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="股票数量" width="100" align="center">
+                <template #default="{ row }">
+                  <el-tag type="info" class="clickable-tag" @click="handleShowSectorStocks(row)">{{ row.count }}只</el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+        </el-col>
+        <el-col :xs="24" :md="12">
+          <el-card shadow="hover" class="sector-table-card">
+            <template #header>
+              <span>板块统计详情 · 概念</span>
             </template>
-          </el-table-column>
-        </el-table>
-      </el-card>
+            <el-table :data="conceptSectors" stripe style="width: 100%">
+              <el-table-column type="index" label="排名" width="70" align="center" />
+              <el-table-column prop="sector" label="板块" min-width="110" show-overflow-tooltip />
+              <el-table-column label="得分" width="90" align="center">
+                <template #default="{ row }">
+                  <el-tag type="warning" class="clickable-tag" @click="showSectorFactorTree(row)">{{ Math.round(row.score) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="股票数量" width="100" align="center">
+                <template #default="{ row }">
+                  <el-tag type="info" class="clickable-tag" @click="handleShowSectorStocks(row)">{{ row.count }}只</el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+        </el-col>
+      </el-row>
 
       <!-- Top100 股票明细 -->
       <el-card shadow="hover" class="stock-table-card">
@@ -632,6 +709,9 @@ const chartData = ref(null)
 const activeFactorTab = ref('1')
 const showFactorTreeDialog = ref(false)
 const currentStock = ref(null)
+// 板块得分因子详情弹窗
+const showSectorFactorDialog = ref(false)
+const currentSector = ref(null)
 
 // 大盘指数详情弹窗
 const showMarketDetailDialog = ref(false)
@@ -746,6 +826,18 @@ const editTagForm = ref({ name: '', color: '#409EFF' })
 // 计算属性
 const summary = computed(() => chartData.value?.summary || {})
 const sectors = computed(() => chartData.value?.sectors || [])
+// 行业 / 概念 板块（各自独立排名取前10）；兼容旧数据：从混合 sectors 按 sectorType 切分
+const industrySectors = computed(() => {
+  if (chartData.value?.sectorsIndustry?.length) return chartData.value.sectorsIndustry
+  return (chartData.value?.sectors || []).filter(s => (s.sectorType || s.sector_type) === 'industry')
+})
+const conceptSectors = computed(() => {
+  if (chartData.value?.sectorsConcept?.length) return chartData.value.sectorsConcept
+  return (chartData.value?.sectors || []).filter(s => (s.sectorType || s.sector_type) === 'concept')
+})
+const sectorScoreExpression = computed(() => chartData.value?.sectorScoreExpression || '')
+const sectorScoreExpressionName = computed(() => chartData.value?.sectorScoreExpressionName || '板块得分')
+const sectorScoreFactors = computed(() => chartData.value?.sectorScoreFactors || [])
 const top100Detail = computed(() => chartData.value?.top100Detail || [])
 
 // 大盘指数详情（树状结构）
@@ -850,6 +942,37 @@ const treeVisualProps = {
   children: 'children',
   label: 'name'
 }
+
+// 点击板块得分 -> 展示该板块得分的因子详情（与股票/大盘因子树一致）
+const showSectorFactorTree = (row) => {
+  currentSector.value = row
+  showSectorFactorDialog.value = true
+}
+
+// 板块得分因子树：根节点=板块得分(含表达式)，子节点=各引用因子及其取值
+const sectorFactorTreeData = computed(() => {
+  const sec = currentSector.value
+  if (!sec) return []
+  const fv = sec.factorValues || {}
+  const children = (sectorScoreFactors.value || []).map(f => ({
+    id: `sf_${f.code}`,
+    name: f.name || f.code,
+    code: f.code,
+    level: 1,
+    levelClass: 'level-source',
+    value: typeof fv[f.code] === 'number' ? fv[f.code] : undefined
+  }))
+  return [{
+    id: 'sector_score',
+    name: sectorScoreExpressionName.value,
+    code: sec.sectorCode || sec.sector || '',
+    level: 3,
+    levelClass: 'level-score',
+    value: typeof sec.score === 'number' ? sec.score : undefined,
+    expression: sectorScoreExpression.value,
+    children
+  }]
+})
 
 // 从表达式中提取因子代码列表
 const getFactorCodesFromExpression = (expr) => {
@@ -1094,9 +1217,10 @@ const handleShowSectorStocks = async (row) => {
     // 如果没有 sectorCode，尝试从后端获取
     try {
       const res = await getSectorStocks('', { sector_name: row.sector })
-      if (res.code === 200 && res.data.list && res.data.list.length > 0) {
-        sectorStocksList.value = res.data.list || []
-        sectorStocksTotal.value = res.data.total || 0
+      const list = res.data?.stocks || res.data?.list || []
+      if (res.code === 200 && list.length > 0) {
+        sectorStocksList.value = list
+        sectorStocksTotal.value = res.data.total || list.length
         currentSectorName.value = row.sector
         showSectorStocksDialog.value = true
         return
@@ -1115,8 +1239,8 @@ const handleShowSectorStocks = async (row) => {
   try {
     const res = await getSectorStocks(sectorCode, { page: 1, page_size: 100 })
     if (res.code === 200) {
-      sectorStocksList.value = res.data.list || []
-      sectorStocksTotal.value = res.data.total || 0
+      sectorStocksList.value = res.data?.stocks || res.data?.list || []
+      sectorStocksTotal.value = res.data?.total || sectorStocksList.value.length
     }
   } catch (error) {
     console.error('获取板块成分股失败:', error)
