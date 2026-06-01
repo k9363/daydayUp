@@ -37,7 +37,10 @@ class ReviewTask(db.Model):
     start_time = db.Column(db.DateTime, comment='开始时间')
     end_time = db.Column(db.DateTime, comment='结束时间')
     error_message = db.Column(db.Text, comment='错误信息')
-    
+
+    # 复盘邮件防重（事件驱动：全市场分析 push 到货触发发邮件 + 18:45 兜底，二者用此标记互斥防重）
+    email_sent = db.Column(db.Boolean, nullable=False, server_default='0', default=False, comment='复盘邮件是否已发送')
+
     # 时间戳
     create_time = db.Column(db.DateTime, default=datetime.now, comment='创建时间')
     update_time = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now, comment='更新时间')

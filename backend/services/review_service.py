@@ -1014,16 +1014,10 @@ class ReviewTaskService:
             # 复盘成功 → 仅【定时任务】触发的复盘自动发邮件（task_name 带 [定时] 标记）；
             # 手动重跑/Excel 任务等不自动发，用户可在报告页通过「发送邮件」按钮手动发
             # （/api/email/send-review/<task_id>）。失败只 warn 不影响复盘成功状态。
-            if '[定时]' in (task.task_name or ''):
-                try:
-                    # 等 TA-CN 全市场分析就绪再发，避免邮件赶在分析完成前发出（缺全市场分析段）
-                    _wait_for_market_report(trade_date)
-                    from services.email_service import send_daily_review_email
-                    _res = send_daily_review_email(task.id)
-                    if not _res.get('success') and not _res.get('skipped'):
-                        logger.warning(f"⚠️ 复盘邮件未发出: {_res.get('error')}")
-                except Exception as _ee:
-                    logger.warning(f"⚠️ 复盘邮件发送异常（不影响复盘）: {_ee}")
+            # 复盘邮件改为【事件驱动】：此处不再阻塞轮询/发送。
+            # TA-CN 全市场分析 push 到货时，由 routes/external._maybe_send_review_email_on_batch
+            # 触发发送（email_sent 防重）；分析迟迟不来则 scheduler 18:45 兜底降级发。
+            # 仅【定时】复盘走自动发；手动重跑/Excel 任务仍用报告页「发送邮件」按钮。
             return task
 
         except Exception as e:
@@ -1168,16 +1162,10 @@ class ReviewTaskService:
             # 复盘成功 → 仅【定时任务】触发的复盘自动发邮件（task_name 带 [定时] 标记）；
             # 手动重跑/Excel 任务等不自动发，用户可在报告页通过「发送邮件」按钮手动发
             # （/api/email/send-review/<task_id>）。失败只 warn 不影响复盘成功状态。
-            if '[定时]' in (task.task_name or ''):
-                try:
-                    # 等 TA-CN 全市场分析就绪再发，避免邮件赶在分析完成前发出（缺全市场分析段）
-                    _wait_for_market_report(trade_date)
-                    from services.email_service import send_daily_review_email
-                    _res = send_daily_review_email(task.id)
-                    if not _res.get('success') and not _res.get('skipped'):
-                        logger.warning(f"⚠️ 复盘邮件未发出: {_res.get('error')}")
-                except Exception as _ee:
-                    logger.warning(f"⚠️ 复盘邮件发送异常（不影响复盘）: {_ee}")
+            # 复盘邮件改为【事件驱动】：此处不再阻塞轮询/发送。
+            # TA-CN 全市场分析 push 到货时，由 routes/external._maybe_send_review_email_on_batch
+            # 触发发送（email_sent 防重）；分析迟迟不来则 scheduler 18:45 兜底降级发。
+            # 仅【定时】复盘走自动发；手动重跑/Excel 任务仍用报告页「发送邮件」按钮。
             return task
 
         except Exception as e:

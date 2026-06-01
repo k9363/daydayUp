@@ -79,10 +79,21 @@ class SchedulerService:
                 replace_existing=True,
             )
 
+            # 复盘邮件兜底：18:45（复盘 18:00 后给 TA-CN 全市场分析 ~45min）检查当天 [定时]
+            # 已完成但邮件未发的复盘 → 降级发（事件驱动 push 主路径没来时保底，email_sent 防重）
+            review_mail_backstop_trigger = CronTrigger(day_of_week='0-4', hour=18, minute=45)
+            self.scheduler.add_job(
+                self.execute_review_email_backstop,
+                review_mail_backstop_trigger,
+                id='review_email_backstop',
+                name='复盘邮件兜底发送',
+                replace_existing=True,
+            )
+
             logger.info(
                 "✅ 定时任务调度器初始化完成: "
                 "每 2 小时 :00 淘股吧热帖 / :05 特别关注 / "
-                "周一到周六 17:30 元数据补充(周六概念全量比对) / 周一到周五 18:00 复盘"
+                "周一到周六 17:30 元数据补充(周六概念全量比对) / 周一到周五 18:00 复盘 / 18:45 复盘邮件兜底"
             )
         except ImportError:
             logger.warning("⚠️ APScheduler未安装，定时任务功能不可用")
@@ -160,6 +171,48 @@ class SchedulerService:
                 return {"success": True, "industry": industry, "concept": concept, "stocks": stocks}
         except Exception as e:
             logger.error(f"❌ AKShare 元数据增量补充失败: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    def execute_review_email_backstop(self):
+        """复盘邮件兜底（事件驱动主路径的保底）。
+
+        主路径：TA-CN 全市场分析 push 到货时，routes/external 即时发邮件（email_sent 防重）。
+        本兜底：18:45 检查当天【定时】已完成但 email_sent=False 的复盘 task，降级发出
+        （此时 push 仍没来，邮件可能不含全市场分析段，但保证复盘邮件不丢）。
+        """
+        logger.info("⏰ 定时任务触发: 复盘邮件兜底检查")
+        try:
+            from datetime import datetime as _dt
+            from app import create_app
+            from extensions import db
+            from models.reviewtask import ReviewTask
+            from services.email_service import send_daily_review_email
+
+            app = create_app()
+            with app.app_context():
+                today = _dt.now().strftime('%Y-%m-%d')
+                tasks = (ReviewTask.query
+                         .filter(ReviewTask.trade_date == today,
+                                 ReviewTask.task_name.like('%[定时]%'),
+                                 ReviewTask.status == 'completed',
+                                 ReviewTask.email_sent.is_(False))
+                         .all())
+                if not tasks:
+                    logger.info("✅ 复盘邮件兜底: 当天复盘邮件均已发送，无需兜底")
+                    return {"success": True, "sent": 0}
+                sent = 0
+                for t in tasks:
+                    res = send_daily_review_email(t.id)
+                    if res.get('success'):
+                        t.email_sent = True
+                        db.session.commit()
+                        sent += 1
+                        logger.warning(f"📧 兜底发出复盘邮件（全市场分析可能未到）task={t.id}")
+                    elif not res.get('skipped'):
+                        logger.warning(f"⚠️ 兜底发邮件未成功 task={t.id}: {res.get('error')}")
+                return {"success": True, "sent": sent}
+        except Exception as e:
+            logger.error(f"❌ 复盘邮件兜底失败: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
     def execute_tgb_hot_fetch(self):

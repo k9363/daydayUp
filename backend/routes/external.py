@@ -13,6 +13,37 @@ logger = logging.getLogger(__name__)
 external_bp = Blueprint('external', __name__)
 
 
+def _maybe_send_review_email_on_batch(source, trade_date):
+    """全市场综合分析（TA-CN push，source 含 'batch'）到货时，触发当天【定时】复盘邮件。
+
+    事件驱动，替代复盘端 _wait_for_market_report 轮询：分析无论多久到货都能即时发邮件，
+    不受 720s 上限约束。email_sent 防重（与 scheduler 18:45 兜底互斥，谁先发谁置位）。
+    仅 source 含 'batch'（全市场分析）触发；个股分析 push（source=ta-cn 等）不触发。"""
+    if 'batch' not in (source or '').lower() or not trade_date:
+        return
+    try:
+        from models.reviewtask import ReviewTask
+        from services.email_service import send_daily_review_email
+        task = (ReviewTask.query
+                .filter(ReviewTask.trade_date == trade_date,
+                        ReviewTask.task_name.like('%[定时]%'),
+                        ReviewTask.status == 'completed',
+                        ReviewTask.email_sent.is_(False))
+                .order_by(ReviewTask.id.desc()).first())
+        if not task:
+            return
+        res = send_daily_review_email(task.id)
+        if res.get('success'):
+            task.email_sent = True
+            db.session.commit()
+            logger.info(f"📧 全市场分析到货 → 已发当天复盘邮件 task={task.id} date={trade_date}")
+        elif not res.get('skipped'):
+            logger.warning(f"⚠️ 全市场分析到货发邮件未成功 task={task.id}: {res.get('error')}")
+    except Exception as e:
+        db.session.rollback()
+        logger.warning(f"全市场分析到货触发复盘邮件异常（忽略，不影响 push 接收）: {e}")
+
+
 @external_bp.route('/analysis', methods=['POST'])
 def upsert_external_analysis():
     """接收外部系统（TA-CN 等）推送的分析结果。
@@ -63,6 +94,10 @@ def upsert_external_analysis():
         obj.related_review_task_id = payload.get('related_review_task_id') or obj.related_review_task_id
 
         db.session.commit()
+
+        # 事件驱动：全市场分析(source 含 batch)到货 → 发当天[定时]复盘邮件（替代复盘端轮询等待）
+        _maybe_send_review_email_on_batch(source, obj.trade_date)
+
         return jsonify({
             'code': 200,
             'message': '操作成功',
