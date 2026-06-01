@@ -71,7 +71,11 @@ def _wait_for_market_report(trade_date, timeout_s=720, interval_s=20):
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            db.session.expire_all()
+            # rollback 结束当前只读事务、下次 query 开新快照：MySQL 默认 REPEATABLE READ 下，
+            # 仅 expire_all 清对象缓存而不换事务，复盘长 session 快照固定在轮询起点，
+            # 看不到轮询期间 TA-CN push 新插入的 external_analysis（→ push 成功却"等不到"超时）。
+            # 两处调用均在复盘 commit 之后，此处 rollback 不丢业务数据。
+            db.session.rollback()
             ext = (ExternalAnalysis.query
                    .filter(ExternalAnalysis.trade_date == trade_date)
                    .filter(ExternalAnalysis.source.like('%batch%'))
