@@ -87,32 +87,36 @@ def _markdown_to_html(md: Optional[str]) -> str:
 
 
 def _strip_section_by_heading(md: Optional[str], *keywords: str) -> Optional[str]:
-    """从 markdown 中剥离含 keyword 的章节（h1~h3 / 加粗 / "X、" 编号 都识别为章节起点）。
+    """从 markdown 中剥离含 keyword 的章节，连同其下所有更低级子标题一并丢弃。
 
-    遇到含任一 keyword 的章节标题行 → 从该行开始丢弃；直到下一个同/更高层级标题行恢复。
-    用于在邮件展示场景里隐藏某些章节（如「持仓个股操作建议」），原始报告不变。
+    层级：markdown `#`~`######` 按 `#` 数计；加粗/中文编号章节（`**一、` / `一、`）视为 2 级（与 `##` 同级）。
+    命中含任一 keyword 的标题 → 从该行起丢弃，直到出现 level <= 命中级别 的标题才恢复。
+    **关键**：持仓章节（`## 十、持仓个股操作建议`）下的 `### 持仓总览` 等子标题级别更深，
+    必须一并丢弃——否则遇到第一个子标题就提前恢复，只删大标题、子内容残留（旧 bug）。
+    用于邮件展示隐藏某些章节（如「持仓个股操作建议」），原始报告不变。
     """
     if not md:
         return md
     import re
-    heading_patterns = [
-        re.compile(r"^\s*#{1,3}\s+"),                              # markdown # / ## / ###
-        re.compile(r"^\s*\*\*\s*[一二三四五六七八九十百千]+\s*[、.]"),  # **一、...** 加粗标题
-        re.compile(r"^\s*[一二三四五六七八九十百千]+\s*[、.][^\d]"),    # 一、xxx 中文编号标题
-    ]
-    def is_heading(line: str) -> bool:
-        return any(p.match(line) for p in heading_patterns)
+    def heading_level(line: str) -> int:
+        m = re.match(r"^\s*(#{1,6})\s+", line)
+        if m:
+            return len(m.group(1))
+        if re.match(r"^\s*\*\*\s*[一二三四五六七八九十百千]+\s*[、.]", line) or \
+           re.match(r"^\s*[一二三四五六七八九十百千]+\s*[、.][^\d]", line):
+            return 2  # 加粗/中文编号章节视为 2 级
+        return 0  # 非标题
 
-    out, skip = [], False
+    out, skip_level = [], None  # None=不在剥离中；否则为命中章节的级别
     for line in md.split("\n"):
-        if is_heading(line):
-            hit = any(kw in line for kw in keywords)
-            if hit:
-                skip = True
+        lvl = heading_level(line)
+        if lvl > 0:
+            if skip_level is not None and lvl <= skip_level:
+                skip_level = None  # 遇同级/更高级标题 → 结束剥离
+            if skip_level is None and any(kw in line for kw in keywords):
+                skip_level = lvl  # 命中 → 从本章节起剥离（含其更低级子标题）
                 continue
-            else:
-                skip = False
-        if not skip:
+        if skip_level is None:
             out.append(line)
     return "\n".join(out)
 
