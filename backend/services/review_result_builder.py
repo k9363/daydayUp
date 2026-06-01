@@ -288,11 +288,6 @@ class ReviewResultBuilder:
         sector_result.metric_name = '前10板块'
         sector_result.status = 'normal'
 
-        # 获取前30只股票的板块关联
-        top30_stocks = factors_df.head(TOP_N_FOR_SECTOR)
-        top30_codes = top30_stocks['stock_code'].tolist()
-        sector_relations_map = self._get_sector_stocks_relation_map(top30_codes)
-
         # 板块得分表达式 + 其引用的因子（用于「点击得分看因子详情」，与股票/大盘因子展示一致）
         expression_text, expression_name, score_factor_meta = self._get_sector_score_expression_meta()
         score_factor_codes = [f['code'] for f in score_factor_meta]

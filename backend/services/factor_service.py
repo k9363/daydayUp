@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 
 import simpleeval
+from config import TOP_N_FOR_SECTOR
 from extensions import db
 from models.factor import FactorDefine, FactorSource
 from models.expression import ScoreExpression
@@ -883,16 +884,17 @@ class FactorCalculator:
                     sector_data[sc].update(vals)
 
         # 构建板块DataFrame，同时添加 stock_count 和 top_stocks
-        top30_codes = stock_factors_df.head(30)['stock_code'].tolist()
-        
+        # 弹窗展示用：取因子排名前 TOP_N_FOR_SECTOR 的股票（与股票池对齐），仅影响展示不参与得分
+        topn_codes = stock_factors_df.head(TOP_N_FOR_SECTOR)['stock_code'].tolist()
+
         sector_records = []
         for sector_code, data in sector_data.items():
             sector_stocks = stock_to_sector.get(sector_code, [])
-            
-            # 筛选出前30股票中属于该板块的股票
+
+            # 筛选出前 N 股票中属于该板块的股票
             top_stocks_in_sector = stock_factors_df[
-                (stock_factors_df['stock_code'].isin(sector_stocks)) & 
-                (stock_factors_df['stock_code'].isin(top30_codes))
+                (stock_factors_df['stock_code'].isin(sector_stocks)) &
+                (stock_factors_df['stock_code'].isin(topn_codes))
             ]
             top_stocks_list = []
             for _, srow in top_stocks_in_sector.iterrows():

@@ -113,7 +113,10 @@ STOCK_TYPE_BOND = 'bond'
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 DEFAULT_TOP_N = 100
-TOP_N_FOR_SECTOR = 30
+# 板块弹窗展示的成分股范围：取因子排名前 N 的股票里属于该板块的。
+# 与股票池 DEFAULT_TOP_N(=100) 对齐，使板块「股票数量」与点开弹窗看到的股票一致。
+# 注意：此值只影响展示，不参与板块得分计算（得分走 ScoreExpression 表达式）。
+TOP_N_FOR_SECTOR = 100
 TOP_N_FOR_DISPLAY = 10
 
 FACTOR_CATEGORY_KLINE_FIELD = 'kline_field'
