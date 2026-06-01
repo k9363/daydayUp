@@ -1147,26 +1147,28 @@ def get_batch_stock_sectors():
         if not stock_codes:
             return jsonify({'code': 400, 'message': '股票代码列表不能为空'}), 400
         
-        # 查询所有股票的板块
+        # 查询所有股票的板块（带人工优先级 priority）
         relations = db.session.query(
             StockSectorRelation.stock_code,
+            StockSectorRelation.priority,
             StockSector
         ).join(
             StockSector, StockSector.id == StockSectorRelation.sector_id
         ).filter(
             StockSectorRelation.stock_code.in_(stock_codes)
         ).all()
-        
-        # 按股票代码分组
+
+        # 按股票代码分组（带 priority，复盘页板块 tag 据此高亮/排序，实时反映 relation 表）
         result = {}
-        for stock_code, sector in relations:
+        for stock_code, priority, sector in relations:
             if stock_code not in result:
                 result[stock_code] = []
             result[stock_code].append({
                 'id': sector.id,
                 'sector_code': sector.sector_code,
                 'sector_name': sector.sector_name,
-                'sector_type': sector.sector_type
+                'sector_type': sector.sector_type,
+                'priority': priority or 0
             })
         
         return jsonify({
