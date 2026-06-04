@@ -139,7 +139,30 @@ class FactorCalculator:
             logger.debug(f"  - {f.factor_code}: {f.factor_name}, method={f.calculation_method}, expression={f.expression}")
         
         return all_factor_map
-    
+
+    def _fetch_intraday_deviation(self, stock_codes, trade_date):
+        """调 TA-CN 批量计算「分时分离度」因子（个股当日分时 vs 上证0.7+所属宽基0.3 的分离度，
+        识别主动领涨/抗跌承接/被动跟跌；score∈[-20,20]）。返回 {code6: {...}}；失败返回 {}。
+        数据与计算在 TA-CN（分时在其 mongo），daydayUp 只取结果；失败不阻断复盘（因子缺省 0）。"""
+        import os
+        import requests
+        tacn = os.getenv('TACN_API_BASE', 'http://host.docker.internal:8000').rstrip('/')
+        token = os.getenv('INTERNAL_TRIGGER_TOKEN', '')
+        try:
+            resp = requests.post(
+                f"{tacn}/api/sync/intraday-deviation",
+                json={"codes": list(stock_codes), "trade_date": str(trade_date)},
+                headers={"X-Internal-Token": token} if token else {},
+                timeout=90,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"intraday-deviation HTTP {resp.status_code}: {resp.text[:150]}")
+                return {}
+            return (resp.json() or {}).get("data") or {}
+        except Exception as e:
+            logger.warning(f"intraday-deviation 调用失败: {e}")
+            return {}
+
     def calculate_stock_factors(self, stock_codes: List[str], trade_date: str, db_session) -> pd.DataFrame:
         """
         计算股票因子得分
@@ -629,6 +652,26 @@ class FactorCalculator:
                 logger.debug(f"🔍 计算 Python 因子: {factor_code}, method={factor_def.calculation_method}")
 
         logger.info(f"📊 Python 因子计算完成: {list(calculated_columns)}")
+
+        # 8.6 外部分时因子：分时分离度（TA-CN /api/sync/intraday-deviation，2026-06-03）
+        #   个股当日 5min 分时 vs 上证(0.7)+所属宽基(0.3) 的分离度，识别主动领涨/抗跌承接/被动跟跌。
+        #   登记 FactorDefine(intraday_deviation, is_active) 即启用；接口失败/无分时 → 0，不阻断复盘。
+        if 'intraday_deviation' in all_factor_map:
+            df['intraday_deviation'] = 0.0
+            try:
+                _dev = self._fetch_intraday_deviation(df['stock_code'].tolist(), trade_date)
+                if _dev:
+                    def _c6(c):
+                        s = ''.join(ch for ch in str(c) if ch.isdigit())
+                        return s.zfill(6)[-6:] if s else ''
+                    df['intraday_deviation'] = df['stock_code'].map(
+                        lambda c: float((_dev.get(_c6(c)) or {}).get('score') or 0.0))
+                    _nz = int((df['intraday_deviation'] != 0).sum())
+                    logger.info(f"✅ 分时分离度因子注入: {_nz}/{len(df)} 只非零")
+            except Exception as _de:
+                logger.warning(f"⚠️ 分时分离度因子获取失败（缺省0，不影响复盘）: {_de}")
+            calculated_columns.add('intraday_deviation')
+            records = df.to_dict('records')  # 新列同步进 records，供下方总分表达式引用
 
         # 9. 计算总分（score_expr 在步骤4已查询，此处直接复用；records 已与 df 同步，无需重建）
         # 计算总分（使用表达式因子计算后的结果）
