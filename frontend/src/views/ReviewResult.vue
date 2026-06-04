@@ -1168,21 +1168,26 @@ const stockFactorTreeData = computed(() => {
       }
     }
     
-    // 如果没有子节点，尝试添加基础因子
+    // 如果没有子节点，尝试添加基础因子（仅挂表达式真正引用到的列）
     if (rootNode.children.length === 0) {
-      for (const [baseCode, baseFactor] of Object.entries(mergedFactorMap)) {
-        if (baseCode === code) continue
-        if (!baseFactor.expression && baseFactor.calculation_method) {
-          rootNode.children.push({
-            id: `base-${code}-${baseCode}`,
-            name: baseFactor.name || baseCode,
-            code: baseCode,
-            value: getValue(baseCode),
-            level: 1,
-            levelClass: 'level-1',
-            children: []
-          })
+      if (factor.expression) {
+        for (const [baseCode, baseFactor] of Object.entries(mergedFactorMap)) {
+          if (baseCode === code) continue
+          if (!baseFactor.expression && baseFactor.calculation_method && factor.expression.includes(baseCode)) {
+            rootNode.children.push({
+              id: `base-${code}-${baseCode}`,
+              name: baseFactor.name || baseCode,
+              code: baseCode,
+              value: getValue(baseCode),
+              level: 1,
+              levelClass: 'level-1',
+              children: []
+            })
+          }
         }
+      } else if (factor.description) {
+        // external 等无表达式因子（如分时分离度由 TA-CN 计算）：无本地依赖列，作叶子并展示描述
+        rootNode.expression = factor.description
       }
     }
     
