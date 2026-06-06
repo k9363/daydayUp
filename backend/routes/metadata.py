@@ -1546,6 +1546,22 @@ def import_delivery():
 
         db.session.commit()
 
+        # 有新数据导入 → 回调 TA-CN 清掉持仓/卖飞的交割单结构缓存（fire-and-forget，失败只 log）
+        if imported_count > 0:
+            try:
+                import os
+                import requests as _rq
+                tacn_base = os.getenv('TACN_API_BASE', 'http://host.docker.internal:8000')
+                token = os.getenv('INTERNAL_TRIGGER_TOKEN', '')
+                _rq.post(
+                    f'{tacn_base}/api/delivery-review/clear-struct-cache',
+                    headers={'X-Internal-Token': token} if token else {},
+                    timeout=3,
+                )
+                logger.info(f"🧹 已通知 TA-CN 清除交割单结构缓存（本次导入 {imported_count} 条）")
+            except Exception as _e:
+                logger.warning(f"⚠️ 通知 TA-CN 清缓存失败（不影响导入）: {_e}")
+
         return jsonify({
             'code': 200,
             'message': '导入完成',
