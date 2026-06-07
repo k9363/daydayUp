@@ -2742,19 +2742,28 @@ def get_review_task_service():
 # ============ 2026-06-07: 指标对账安全网（daydayUp 自算 vs TA-CN 统一指标快照） ============
 
 def _reconcile_indicators_with_tacn(top_df, trade_date):
-    """抽样对比 daydayUp 自算的 MA/收盘价 与 TA-CN 统一指标快照，偏差 >1% 记为 mismatch。
+    """全指标对账：daydayUp 数据源 × TA-CN 同公式 vs TA-CN 统一指标快照。
 
-    防"静默失真"类事故（如 RSI 短窗口事故靠肉眼才发现）。两边数据源不同
-    （baostock/tushare），正常应逐位接近；系统性偏差说明某边计算/数据坏了。
+    两层：
+    1) top_df 自带字段直接对（ma5/10/20/60、close）——baostock 预计算值
+    2) 从 stock_daily_kline 拉近 290 自然日 OHLC，用与 TA-CN 完全相同的公式
+       （通达信口径：RSI=ewm(com=N-1,adjust=True)、MACD=ema span、BOLL rolling20 ddof=0）
+       现场计算 RSI6/12/24、DIF/DEA、BOLL 上中下轨，再对快照 —— 覆盖全部技术指标。
+    防"静默失真"类事故；两边数据源不同，系统性偏差说明某边计算/数据坏了。
     返回 None 表示快照不可用（预计算未跑/不新鲜），跳过对账。
     """
     import os
     import requests
+    import numpy as np
+    import pandas as pd
+
     codes6 = []
+    code_map = {}  # 6位 -> 原始带前缀
     for sc in top_df['stock_code'].tolist():
         c = str(sc).split('.')[-1][-6:]
         if len(c) == 6 and c.isdigit():
             codes6.append(c)
+            code_map[c] = str(sc)
     if not codes6:
         return None
     tacn = os.getenv('TACN_API_BASE', 'http://host.docker.internal:8000')
@@ -2770,10 +2779,31 @@ def _reconcile_indicators_with_tacn(top_df, trade_date):
     if not snaps:
         return None
     td8 = str(trade_date).replace('-', '')[:8]
+    td_dash = f"{td8[:4]}-{td8[4:6]}-{td8[6:8]}"
+
+    mismatches = []
     checked = 0
     stale = 0
-    mismatches = []
-    field_pairs = [('ma5', 'ma5'), ('ma10', 'ma10'), ('ma20', 'ma20'), ('close_price', 'close')]
+
+    def _cmp(code, field, dv, sv, abs_tol=None, rel_tol=0.01):
+        """阈值：相对差 >rel_tol 且绝对差 >abs_tol(若设) 记 mismatch。"""
+        try:
+            dv = float(dv); sv = float(sv)
+        except (TypeError, ValueError):
+            return
+        if np.isnan(dv) or np.isnan(sv):
+            return
+        base = max(abs(sv), 1e-9)
+        rel = abs(dv - sv) / base
+        if abs_tol is not None:
+            if abs(dv - sv) > abs_tol and rel > rel_tol:
+                mismatches.append({'code': code, 'field': field, 'daydayup': round(dv, 3),
+                                   'tacn_snapshot': round(sv, 3), 'diff_pct': round(rel * 100, 2)})
+        elif rel > rel_tol:
+            mismatches.append({'code': code, 'field': field, 'daydayup': round(dv, 3),
+                               'tacn_snapshot': round(sv, 3), 'diff_pct': round(rel * 100, 2)})
+
+    # ---- 第一层：top_df 自带字段（baostock 预计算 MA） ----
     for _, row in top_df.iterrows():
         c = str(row['stock_code']).split('.')[-1][-6:]
         snap = snaps.get(c)
@@ -2783,27 +2813,70 @@ def _reconcile_indicators_with_tacn(top_df, trade_date):
             stale += 1
             continue
         checked += 1
-        for dd_f, sn_f in field_pairs:
-            try:
-                dv = float(row.get(dd_f))
-                sv = float(snap.get(sn_f))
-            except (TypeError, ValueError):
-                continue
-            if sv == 0:
-                continue
-            diff = abs(dv - sv) / abs(sv) * 100
-            if diff > 1.0:
-                mismatches.append({
-                    'code': c, 'field': dd_f,
-                    'daydayup': round(dv, 3), 'tacn_snapshot': round(sv, 3),
-                    'diff_pct': round(diff, 2),
-                })
+        for dd_f, sn_f in [('ma5', 'ma5'), ('ma10', 'ma10'), ('ma20', 'ma20'),
+                           ('ma60', 'ma60'), ('close_price', 'close')]:
+            if dd_f in row.index and row.get(dd_f) is not None:
+                _cmp(c, dd_f, row.get(dd_f), snap.get(sn_f))
+
+    # ---- 第二层：daydayUp K线序列 × TA-CN 同公式 → RSI/MACD/BOLL 全量对账 ----
+    series_checked = 0
+    try:
+        from models.kline import BaseKLine  # noqa: F401  (确认模型模块可用)
+        from extensions import db as _db
+        from sqlalchemy import text as _text
+        from datetime import datetime as _dt, timedelta as _td
+        start_dash = (_dt.strptime(td_dash, '%Y-%m-%d') - _td(days=290)).strftime('%Y-%m-%d')
+        fresh_codes = [c for c in codes6 if snaps.get(c) and str(snaps[c].get('trade_date')) == td8]
+        prefixed = [code_map[c] for c in fresh_codes]
+        if prefixed:
+            rows = _db.session.execute(_text(
+                "SELECT stock_code, trade_date, close_price FROM stock_daily_kline "
+                "WHERE stock_code IN :codes AND trade_date BETWEEN :s AND :e"
+            ), {'codes': tuple(prefixed), 's': start_dash, 'e': td_dash}).fetchall()
+            if rows:
+                kdf = pd.DataFrame(rows, columns=['stock_code', 'trade_date', 'close'])
+                kdf['close'] = pd.to_numeric(kdf['close'], errors='coerce')
+                for sc, sub in kdf.groupby('stock_code'):
+                    c = str(sc).split('.')[-1][-6:]
+                    snap = snaps.get(c)
+                    if not snap:
+                        continue
+                    sub = sub.sort_values('trade_date')
+                    close = sub['close'].reset_index(drop=True)
+                    if len(close) < 30 or str(sub['trade_date'].iloc[-1]) != td_dash:
+                        continue
+                    series_checked += 1
+                    # —— 与 TA-CN index_technical 完全相同的公式 ——
+                    delta = close.diff()
+                    gain = delta.clip(lower=0)
+                    loss = (-delta).clip(lower=0)
+                    for n in (6, 12, 24):
+                        ag = gain.ewm(com=n - 1, adjust=True).mean()
+                        al = loss.ewm(com=n - 1, adjust=True).mean()
+                        rsi = (100 - 100 / (1 + ag / al.replace(0, np.nan))).iloc[-1]
+                        _cmp(c, f'rsi{n}', rsi, snap.get(f'rsi{n}'), abs_tol=1.5, rel_tol=0.03)
+                    e12 = close.ewm(span=12, adjust=False).mean()
+                    e26 = close.ewm(span=26, adjust=False).mean()
+                    dif = e12 - e26
+                    dea = dif.ewm(span=9, adjust=False).mean()
+                    _cmp(c, 'dif', dif.iloc[-1], snap.get('dif'), abs_tol=0.08, rel_tol=0.05)
+                    _cmp(c, 'dea', dea.iloc[-1], snap.get('dea'), abs_tol=0.08, rel_tol=0.05)
+                    mb = close.rolling(20, min_periods=1).mean()
+                    sd = close.rolling(20, min_periods=1).std(ddof=0)
+                    _cmp(c, 'boll_up', (mb + 2 * sd).iloc[-1], snap.get('boll_up'))
+                    _cmp(c, 'boll_mid', mb.iloc[-1], snap.get('boll_mid'))
+                    _cmp(c, 'boll_dn', (mb - 2 * sd).iloc[-1], snap.get('boll_dn'))
+    except Exception as _e:
+        logger.warning(f"⚠️ 指标对账第二层(序列)失败: {_e}")
+
     return {
         'type': 'indicator_reconciliation',
         'snapshot_date': td8,
         'checked_stocks': checked,
+        'series_checked': series_checked,
         'stale_snapshots': stale,
         'mismatch_count': len(mismatches),
-        'mismatches': mismatches[:30],
-        'note': '对账字段: ma5/ma10/ma20/close, 阈值1%; daydayUp=baostock口径, 快照=tushare口径(通达信公式200日窗口)',
+        'mismatches': mismatches[:40],
+        'note': ('第一层: ma5/10/20/60+close(baostock预计算 vs tushare快照, 阈值1%); '
+                 '第二层: RSI6/12/24(±1.5)/DIF/DEA(±0.08或5%)/BOLL(1%)——daydayUp K线×TA-CN同公式 vs 快照'),
     }
