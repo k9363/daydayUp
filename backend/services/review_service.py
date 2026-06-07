@@ -2308,6 +2308,27 @@ class ReviewTaskService:
         }, ensure_ascii=False)
         results.append(top_result)
 
+        # 2.5 指标对账安全网（2026-06-07）：daydayUp 自算 MA vs TA-CN 统一指标快照
+        #     防"静默失真"类事故（RSI 短窗口事故曾靠肉眼盘感才发现）。快照不可用则跳过。
+        try:
+            recon = _reconcile_indicators_with_tacn(top_df, trade_date)
+            if recon:
+                rr = ReviewResult()
+                rr.task_id = task.id
+                rr.dimension = '数据质量'
+                rr.metric_name = '指标对账'
+                rr.metric_value = str(recon.get('mismatch_count', 0))
+                rr.status = 'warning' if recon.get('mismatch_count') else 'normal'
+                rr.detail_data = json.dumps(recon, ensure_ascii=False)
+                results.append(rr)
+                logger.info(
+                    f"🔬 指标对账: 核对 {recon.get('checked_stocks')} 只, "
+                    f"不一致 {recon.get('mismatch_count')} 项, 快照陈旧 {recon.get('stale_snapshots')} 只")
+            else:
+                logger.info("🔬 指标对账跳过（快照不可用）")
+        except Exception as _e:
+            logger.warning(f"⚠️ 指标对账失败(跳过): {_e}")
+
         # 3. 因子分析结果 - 前10只股票
         from models.reviewresult import ReviewResult
         top10_result = ReviewResult()
@@ -2716,3 +2737,73 @@ def get_review_task_service():
     """获取复盘任务服务实例"""
     return ReviewTaskService()
 
+
+
+# ============ 2026-06-07: 指标对账安全网（daydayUp 自算 vs TA-CN 统一指标快照） ============
+
+def _reconcile_indicators_with_tacn(top_df, trade_date):
+    """抽样对比 daydayUp 自算的 MA/收盘价 与 TA-CN 统一指标快照，偏差 >1% 记为 mismatch。
+
+    防"静默失真"类事故（如 RSI 短窗口事故靠肉眼才发现）。两边数据源不同
+    （baostock/tushare），正常应逐位接近；系统性偏差说明某边计算/数据坏了。
+    返回 None 表示快照不可用（预计算未跑/不新鲜），跳过对账。
+    """
+    import os
+    import requests
+    codes6 = []
+    for sc in top_df['stock_code'].tolist():
+        c = str(sc).split('.')[-1][-6:]
+        if len(c) == 6 and c.isdigit():
+            codes6.append(c)
+    if not codes6:
+        return None
+    tacn = os.getenv('TACN_API_BASE', 'http://host.docker.internal:8000')
+    tok = os.getenv('INTERNAL_TRIGGER_TOKEN', '')
+    resp = requests.get(
+        f'{tacn}/api/sync/indicators/snapshot',
+        params={'codes': ','.join(codes6)},
+        headers={'X-Internal-Token': tok} if tok else {},
+        timeout=30,
+    )
+    body = resp.json() if resp.status_code == 200 else {}
+    snaps = (body.get('data') or {}) if body.get('success') else {}
+    if not snaps:
+        return None
+    td8 = str(trade_date).replace('-', '')[:8]
+    checked = 0
+    stale = 0
+    mismatches = []
+    field_pairs = [('ma5', 'ma5'), ('ma10', 'ma10'), ('ma20', 'ma20'), ('close_price', 'close')]
+    for _, row in top_df.iterrows():
+        c = str(row['stock_code']).split('.')[-1][-6:]
+        snap = snaps.get(c)
+        if not snap:
+            continue
+        if str(snap.get('trade_date') or '') != td8:
+            stale += 1
+            continue
+        checked += 1
+        for dd_f, sn_f in field_pairs:
+            try:
+                dv = float(row.get(dd_f))
+                sv = float(snap.get(sn_f))
+            except (TypeError, ValueError):
+                continue
+            if sv == 0:
+                continue
+            diff = abs(dv - sv) / abs(sv) * 100
+            if diff > 1.0:
+                mismatches.append({
+                    'code': c, 'field': dd_f,
+                    'daydayup': round(dv, 3), 'tacn_snapshot': round(sv, 3),
+                    'diff_pct': round(diff, 2),
+                })
+    return {
+        'type': 'indicator_reconciliation',
+        'snapshot_date': td8,
+        'checked_stocks': checked,
+        'stale_snapshots': stale,
+        'mismatch_count': len(mismatches),
+        'mismatches': mismatches[:30],
+        'note': '对账字段: ma5/ma10/ma20/close, 阈值1%; daydayUp=baostock口径, 快照=tushare口径(通达信公式200日窗口)',
+    }
