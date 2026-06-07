@@ -918,6 +918,26 @@ class ReviewTaskService:
             review_type = task.review_type or 'daily'
             logger.info(f"📊 ========== 开始执行复盘任务: {trade_date} ({review_type}) ==========")
 
+            # 2026-06-07 系统升级：复盘启动即触发 TA-CN 统一技术指标预计算
+            # （9指数+持仓+自选+top100，130日窗口统一公式）。后台线程 fire-and-forget，
+            # 约1-2分钟完成；18:06 的全市场报告与之后的个股分析读同一份快照。失败只 log。
+            try:
+                import os as _os
+                import threading as _th
+                import requests as _rq
+                def _trigger_precompute():
+                    try:
+                        _tacn = _os.getenv('TACN_API_BASE', 'http://host.docker.internal:8000')
+                        _tok = _os.getenv('INTERNAL_TRIGGER_TOKEN', '')
+                        r = _rq.post(f'{_tacn}/api/sync/indicators/precompute',
+                                     headers={'X-Internal-Token': _tok} if _tok else {}, timeout=300)
+                        logger.info(f"📐 指标预计算完成: {r.json().get('data') if r.status_code == 200 else r.status_code}")
+                    except Exception as _e:
+                        logger.warning(f"⚠️ 指标预计算触发失败(不影响复盘): {_e}")
+                _th.Thread(target=_trigger_precompute, daemon=True).start()
+            except Exception as _e:
+                logger.warning(f"⚠️ 指标预计算线程启动失败: {_e}")
+
             # ========== 步骤1: 获取日K线数据 ==========
             baostock_service = get_baostock_service()
 
