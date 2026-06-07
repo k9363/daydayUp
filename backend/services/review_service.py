@@ -2635,7 +2635,25 @@ class ReviewTaskService:
                 'indexPrices': index_prices,
                 'factors': factors_tree
             }
-            
+
+            # 顶底仪表盘（TA-CN 计算，阈值来自 2025-2026 回测）——大盘定位 + 持仓板块状态机。
+            # 当日首个调用方会触发计算（~1分钟），其后按日缓存秒回；失败只 log 不影响复盘。
+            try:
+                import os as _os
+                import requests as _rq
+                _tacn = _os.getenv('TACN_API_BASE', 'http://host.docker.internal:8000')
+                _tok = _os.getenv('INTERNAL_TRIGGER_TOKEN', '')
+                _resp = _rq.get(f'{_tacn}/api/sync/topbottom-gauge',
+                                headers={'X-Internal-Token': _tok} if _tok else {}, timeout=180)
+                _body = _resp.json() if _resp.status_code == 200 else {}
+                if _body.get('success'):
+                    market_tree['topbottom_gauge'] = _body.get('data')
+                    logger.info("🧭 顶底仪表盘已并入大盘结果")
+                else:
+                    logger.warning(f"⚠️ 顶底仪表盘返回异常: HTTP {_resp.status_code}")
+            except Exception as _e:
+                logger.warning(f"⚠️ 拉取顶底仪表盘失败(跳过): {_e}")
+
             # 保存为一条记录
             market_result = ReviewResult()
             market_result.task_id = task.id

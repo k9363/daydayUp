@@ -23,6 +23,28 @@
           <div class="score-label">综合得分</div>
         </div>
 
+        <!-- 🧭 顶底仪表盘（TA-CN 计算，阈值来自 2025-2026 回测） -->
+        <div v-if="gauge && gauge.market" class="gauge-box">
+          <div class="gauge-verdict">🧭 {{ gauge.market.verdict }}</div>
+          <div class="gauge-readings">
+            量能比 {{ gauge.market.amt_ratio ?? '—' }} · 上涨 {{ gauge.market.up_ratio }}% ·
+            涨停 {{ gauge.market.limit_up }}/跌停 {{ gauge.market.limit_dn }} ·
+            top100中位 {{ gauge.market.top100_chg }}%
+          </div>
+          <div v-if="(gauge.market.top_signals || []).length || (gauge.market.bottom_signals || []).length" class="gauge-signals">
+            <div v-for="s in gauge.market.top_signals || []" :key="'t' + s" class="sig-top">⚠ {{ s }}</div>
+            <div v-for="s in gauge.market.bottom_signals || []" :key="'b' + s" class="sig-bot">▼ {{ s }}</div>
+          </div>
+          <div v-if="(gauge.sectors || []).length" class="gauge-sectors">
+            <el-tooltip
+              v-for="s in gauge.sectors" :key="s.sector" placement="top"
+              :content="`回撤${s.drawdown_pct}%(${s.days_since_top}日) · 切换差${s.spread5}(连正${s.spread_pos_streak}天) · 新高占比${s.nh_now}%/峰${s.nh_peak60}% · 阴阳量比${s.yy_ratio ?? '—'} · corr${s.corr_now ?? '—'}`"
+            >
+              <el-tag size="small" effect="plain" class="gauge-sector-tag">{{ s.sector }}：{{ s.state }}</el-tag>
+            </el-tooltip>
+          </div>
+        </div>
+
         <template v-if="keyFactors.length > 0">
           <el-divider style="margin: 10px 0" />
           <el-row :gutter="8">
@@ -94,6 +116,9 @@ defineEmits(['showMarketDetail'])
 
 const localMarketData = computed(() => props.marketData)
 const localIndexData = computed(() => props.indexData)
+
+// 顶底仪表盘（market_tree.topbottom_gauge，由复盘时从 TA-CN 拉取并入库）
+const gauge = computed(() => props.marketDetail?.topbottom_gauge || null)
 
 /** 与 useReviewData.marketCompositeScore 一致：factors 里用 market_score */
 const compositeScore = computed(() => {
@@ -225,4 +250,18 @@ const formatAmount = (value) => {
   color: var(--el-text-color-secondary);
   margin-top: 2px;
 }
+
+.gauge-box {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: #f8f9fb;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.gauge-verdict { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+.gauge-readings { color: #888; margin-bottom: 4px; }
+.sig-top { color: #e67e22; }
+.sig-bot { color: #27ae60; }
+.gauge-sectors { margin-top: 6px; }
+.gauge-sector-tag { margin: 2px 4px 0 0; cursor: help; max-width: 100%; }
 </style>
