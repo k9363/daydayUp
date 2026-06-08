@@ -371,6 +371,16 @@ class DataSyncService:
         saved_count = 0
         model_class = self._get_model_class(frequency)
 
+        # 2026-06-08 修复：超大批一次性查重(IN 子句含数千 code)在百万行表上耗时数十秒，
+        # 触发 MySQL "Lost connection during query (timed out)" → 会话中毒 → 后续全部连环失败。
+        # 分块处理：每块 ≤800 行独立查重+插入+commit，单次查询/事务受控。
+        _CHUNK = 800
+        if len(data_list) > _CHUNK:
+            total = 0
+            for _i in range(0, len(data_list), _CHUNK):
+                total += self.save_kline_data(db_session, data_list[_i:_i + _CHUNK], frequency, stock_name_map)
+            return total
+
         # 优化：先批量查询已存在的 (stock_code, trade_date) 组合
         code_date_pairs = []
         for row in data_list:
@@ -702,6 +712,12 @@ class DataSyncService:
                         logger.warning(f"⚠️ Tushare 快速路径 HTTP {resp.status_code}，退回 baostock 全量")
                 except Exception as e:
                     logger.warning(f"⚠️ Tushare 快速路径失败（不影响主流程，走 baostock）: {e}")
+                    # 2026-06-08：失败(尤其 MySQL 超时)会使 session 进入"事务已回滚"中毒态，
+                    # 不 rollback 则后续 baostock 路径每次 save/commit 全部连环失败、任务空转。
+                    try:
+                        db_session.rollback()
+                    except Exception:
+                        pass
 
                 # 重新计算 remaining_codes 把 Tushare 覆盖的剔除
                 remaining_codes = [c for c in remaining_codes if c not in tushare_covered_codes]
@@ -774,6 +790,11 @@ class DataSyncService:
                 except Exception as e:
                     logger.error(f"获取 {code} 数据失败: {e}")
                     failed_codes.append(code)
+                    # 单只失败(含 save 时 DB 异常)后 rollback，避免毒化 session 拖垮后续所有股
+                    try:
+                        db_session.rollback()
+                    except Exception:
+                        pass
                     continue
 
             # 检查是否因暂停而退出循环
