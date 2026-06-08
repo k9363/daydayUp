@@ -381,36 +381,12 @@ class DataSyncService:
                 total += self.save_kline_data(db_session, data_list[_i:_i + _CHUNK], frequency, stock_name_map)
             return total
 
-        # 优化：先批量查询已存在的 (stock_code, trade_date) 组合
-        code_date_pairs = []
-        for row in data_list:
-            if not row.get('code') or row.get('close') == '':
-                continue
-            code = row['code']
-            trade_date = row.get('date', '')
-            if frequency in ['5', '15', '30', '60']:
-                trade_date = f"{row.get('date', '')} {row.get('time', '')}"
-            code_date_pairs.append((code, trade_date))
+        # 2026-06-08 根治：表已有唯一索引 uq_stock_daily_kline_code_date(stock_code,trade_date)，
+        # 改用 INSERT ... ON DUPLICATE KEY UPDATE（upsert）由 DB 去重——
+        # 删除原"先 IN 查重(6953 code 巨型 IN，百万行表 60s 超时元凶) 再逐条跳过"的冗余逻辑。
+        # upsert 语义优于原"已存在就跳过"：缺失补全 + 已存在用最新值覆盖纠正（修掉旧脏数据永不更新的缺陷）。
 
-        # 批量查询已存在的记录
-        existing_set = set()
-        if code_date_pairs:
-            # 构建 IN 查询
-            codes = list(set([p[0] for p in code_date_pairs]))
-            dates = list(set([p[1] for p in code_date_pairs]))
-            
-            existing_records = db_session.query(
-                model_class.stock_code,
-                model_class.trade_date
-            ).filter(
-                model_class.stock_code.in_(codes),
-                model_class.trade_date.in_(dates)
-            ).all()
-            
-            existing_set = {(r.stock_code, r.trade_date) for r in existing_records}
-            logger.info(f"批量查询: 发现 {len(existing_set)} 条已存在的记录")
-
-        # 批量添加新记录 - 使用字典映射替代ORM对象
+        # 构建字典映射
         mappings = []
         for row in data_list:
             if not row.get('code') or row.get('close') == '':
@@ -423,11 +399,6 @@ class DataSyncService:
             # 分钟线需要组合日期和时间
             if frequency in ['5', '15', '30', '60']:
                 trade_date = f"{row.get('date', '')} {row.get('time', '')}"
-
-            # 检查是否已存在（使用预查询的结果）
-            if (code, trade_date) in existing_set:
-                logger.debug(f"数据已存在，跳过: {code} {trade_date}")
-                continue
 
             # 获取股票名称：优先使用 stock_name_map，否则尝试从数据行获取
             stock_name = stock_name_map.get(code, '')
@@ -472,12 +443,23 @@ class DataSyncService:
             mappings.append(mapping)
             saved_count += 1
 
-        # 批量添加 - 使用 bulk_insert_mappings
+        # 批量 upsert：INSERT ... ON DUPLICATE KEY UPDATE（唯一索引 stock_code+trade_date 去重）
+        # 冲突时用新值覆盖全部非键列 → 缺失补全 + 旧数据纠正；无冲突则插入。
         if mappings:
-            db_session.bulk_insert_mappings(model_class, mappings)
+            from sqlalchemy.dialects.mysql import insert as _mysql_insert
+            table = model_class.__table__
+            present = set(mappings[0].keys())
+            stmt = _mysql_insert(table).values(mappings)
+            update_cols = {
+                c.name: getattr(stmt.inserted, c.name)
+                for c in table.columns
+                if c.name in present and c.name not in ('id', 'stock_code', 'trade_date', 'create_time')
+            }
+            stmt = stmt.on_duplicate_key_update(**update_cols)
+            db_session.execute(stmt)
 
         db_session.commit()
-        logger.info(f"保存完成: 新增 {saved_count} 条")
+        logger.info(f"保存完成: upsert {saved_count} 条")
         return saved_count
 
     def _get_model_class(self, frequency):
