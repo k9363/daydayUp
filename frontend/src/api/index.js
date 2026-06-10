@@ -102,54 +102,9 @@ export function getStockRealtime(symbols) {
   return request.get('/stock/realtime', { params: { symbols } })
 }
 
-// ==================== 数据同步相关API ====================
-
-// 创建数据同步任务
-export function createSyncTask(data) {
-  const taskData = {
-    task_name: data.taskName,
-    start_date: data.startDate,
-    end_date: data.endDate,
-    frequency: data.frequency,
-    stock_type: data.stockType || 'all'
-  }
-  return request.post('/sync/task', taskData)
-}
-
-// 获取同步任务列表
-export function getSyncTaskList(params) {
-  return request.get('/sync/tasks', { params })
-}
-
-// 获取同步任务详情
-export function getSyncTaskDetail(id) {
-  return request.get(`/sync/task/${id}`)
-}
-
-// 启动同步任务
-export function startSyncTask(id) {
-  return request.post(`/sync/task/${id}/start`)
-}
-
-// 停止同步任务
-export function stopSyncTask(id) {
-  return request.post(`/sync/task/${id}/stop`)
-}
-
-// 删除同步任务
-export function deleteSyncTask(id) {
-  return request.delete(`/sync/task/${id}`)
-}
-
-// 获取K线频率选项
-export function getFrequencyOptions() {
-  return request.get('/sync/frequency/options')
-}
-
-// 获取股票类型选项
-export function getStockTypeOptions() {
-  return request.get('/sync/stock-type/options')
-}
+// ==================== 数据同步相关API（只读查询） ====================
+// 2026-06-10：移除手动同步任务管理 API（createSyncTask/start/stop/delete/task list/options）。
+// 大历史数据同步改用独立临时脚本灌入；每日复盘增量同步由后端 review 内部直接触发，不经此前端入口。
 
 // 获取股票K线数据
 export function getStockKline(stockCode, frequency = 'd', limit = 100) {

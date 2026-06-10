@@ -19,12 +19,6 @@ const routes = [
     meta: { title: '数据管理' }
   },
   {
-        path: 'sync',
-    name: 'DataSync',
-    component: () => import('@/views/DataSync.vue'),
-    meta: { title: '数据同步' }
-  },
-  {
         path: 'metadata',
     name: 'MetadataInit',
     component: () => import('@/views/MetadataInit.vue'),

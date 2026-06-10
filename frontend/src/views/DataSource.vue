@@ -31,17 +31,6 @@
           <el-col :span="6">
             <el-card shadow="hover">
               <div class="stat-item">
-                <el-icon :size="32" color="#E6A23C"><Download /></el-icon>
-                <div class="stat-info">
-                  <span class="stat-value">{{ syncCount }}</span>
-                  <span class="stat-label">同步任务</span>
-                </div>
-              </div>
-            </el-card>
-          </el-col>
-          <el-col :span="6">
-            <el-card shadow="hover">
-              <div class="stat-item">
                 <el-icon :size="32" color="#F56C6C"><Connection /></el-icon>
                 <div class="stat-info">
                   <span class="stat-value">Baostock</span>
@@ -75,13 +64,6 @@
                 <p>查看和管理所有复盘任务</p>
               </div>
             </el-col>
-            <el-col :span="8">
-              <div class="action-item" @click="$router.push('/sync')">
-                <el-icon :size="48" color="#E6A23C"><Refresh /></el-icon>
-                <span>同步数据</span>
-                <p>从Baostock同步股票历史数据</p>
-              </div>
-            </el-col>
           </el-row>
         </el-card>
 
@@ -106,15 +88,14 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { getReviewTaskList, getSyncTaskList } from '@/api'
-import { Document, DataLine, Download, Connection, Plus, List, Refresh } from '@element-plus/icons-vue'
+import { getReviewTaskList } from '@/api'
+import { Document, DataLine, Connection, Plus, List } from '@element-plus/icons-vue'
 
 const router = useRouter()
 
 const loading = ref(false)
 const taskCount = ref(0)
 const stockCount = ref(0)
-const syncCount = ref(0)
 
 // 加载统计数据
 const loadStats = async () => {
@@ -124,12 +105,6 @@ const loadStats = async () => {
     const tasksRes = await getReviewTaskList({ includeCompleted: false })
     if (tasksRes.data.code === 200) {
       taskCount.value = tasksRes.data.data?.length || 0
-    }
-    
-    // 获取同步任务数量
-    const syncRes = await getSyncTaskList({ limit: 100 })
-    if (syncRes.data.code === 200) {
-      syncCount.value = syncRes.data.data?.length || 0
     }
   } catch (error) {
     console.error('加载统计数据失败:', error)

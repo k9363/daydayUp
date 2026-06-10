@@ -38,10 +38,6 @@
             <el-icon><Connection /></el-icon>
             <span>数据管理</span>
           </template>
-          <el-menu-item index="/sync">
-            <el-icon><Refresh /></el-icon>
-            <span>数据同步</span>
-          </el-menu-item>
           <el-menu-item index="/metadata">
             <el-icon><Grid /></el-icon>
             <span>元数据</span>
