@@ -444,14 +444,17 @@ class DataSyncService:
             saved_count += 1
 
         # 批量 upsert：INSERT ... ON DUPLICATE KEY UPDATE（唯一索引 stock_code+trade_date 去重）
-        # 冲突时用新值覆盖全部非键列 → 缺失补全 + 旧数据纠正；无冲突则插入。
+        # 2026-06-11 修复：冲突时用 COALESCE(新值, 旧值) —— 新值非空才覆盖(纠正/补全),
+        #   新值为 NULL 则保留旧值。根治"半截数据(如EOD未落定时open/low/pctChg为空)冲掉已有完整数据"
+        #   的破坏性覆盖(美的6/11被Tushare快速路径半截数据清零的根因)。
         if mappings:
             from sqlalchemy.dialects.mysql import insert as _mysql_insert
+            from sqlalchemy import func as _func
             table = model_class.__table__
             present = set(mappings[0].keys())
             stmt = _mysql_insert(table).values(mappings)
             update_cols = {
-                c.name: getattr(stmt.inserted, c.name)
+                c.name: _func.coalesce(getattr(stmt.inserted, c.name), table.c[c.name])
                 for c in table.columns
                 if c.name in present and c.name not in ('id', 'stock_code', 'trade_date', 'create_time')
             }
@@ -671,8 +674,18 @@ class DataSyncService:
                         # 只取在 remaining_codes 列表里的（不超出本次同步范围）
                         remaining_set = set(remaining_codes)
                         relevant_items = [it for it in items if it.get('code') in remaining_set]
+                        # 2026-06-11 修复(fix2): 完整性校验——EOD 未落定时 market-daily 可能返回
+                        #   open/low/pctChg 为空的半截行。只接受 OHLC+涨跌幅齐全的;不齐的不算覆盖、
+                        #   留给 baostock 兜底补全(否则半截数据会让因子涨跌全失真,如美的6/11)。
+                        def _complete(it):
+                            return all(str(it.get(k, '')).strip() not in ('', 'None', 'nan')
+                                       for k in ('open', 'high', 'low', 'close', 'pctChg'))
+                        _before = len(relevant_items)
+                        relevant_items = [it for it in relevant_items if _complete(it)]
+                        if _before != len(relevant_items):
+                            logger.warning(f"⚠️ Tushare 快速路径剔除 {_before - len(relevant_items)} 只半截数据(open/low/pctChg空),转 baostock 兜底")
                         if relevant_items:
-                            logger.info(f"✅ Tushare 拿到 {len(items)} 行（本批适用 {len(relevant_items)} 只），开始批量写入")
+                            logger.info(f"✅ Tushare 拿到 {len(items)} 行（本批适用 {len(relevant_items)} 只齐全），开始批量写入")
                             saved = self.save_kline_data(db_session, relevant_items, frequency, stock_name_map)
                             total_saved += saved
                             tushare_covered_codes = {it.get('code') for it in relevant_items}

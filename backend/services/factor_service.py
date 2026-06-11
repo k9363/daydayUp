@@ -204,8 +204,14 @@ class FactorCalculator:
                 'stock_code': code,
                 'stock_name': stock_name_map.get(code, ''),
                 'close_price': float(kline.close_price) if kline.close_price else 0,
+                # 2026-06-11 修复: 之前只取 close/volume/turnover/pct_change, 没取 open/high/low/change_percent,
+                #   导致因子表 open_price/low_price/changePercent 恒为0(review_result_builder 读 change_percent 键也对不上 pct_change)。
+                'open_price': float(kline.open_price) if kline.open_price else 0,
+                'high_price': float(kline.high_price) if kline.high_price else 0,
+                'low_price': float(kline.low_price) if kline.low_price else 0,
                 'volume': float(kline.volume) if kline.volume else 0,
                 'turnover': float(kline.turnover) if kline.turnover else 0,
+                'change_percent': float(kline.change_percent) if kline.change_percent else 0,
                 'pct_change': float(kline.change_percent) if kline.change_percent else 0,
             })
         
@@ -245,6 +251,13 @@ class FactorCalculator:
                 'volume': float(kline.volume) if kline.volume else 0,
                 'close_price': float(kline.close_price) if kline.close_price else 0,
                 'high_price': float(kline.high_price) if kline.high_price else 0,
+                # 2026-06-11 修复总根因: 之前 history_data 只存 close/high/turnover/volume,
+                #   而 kline_field 因子(open_price/low_price/pct_change)从这里取 → 取不到=0(high因在此才对)。
+                #   补全 open/low/涨跌幅, 同时让 is_up=IF(pct_change>0,1,0) 等依赖它的因子恢复正常。
+                'open_price': float(kline.open_price) if kline.open_price else 0,
+                'low_price': float(kline.low_price) if kline.low_price else 0,
+                'pct_change': float(kline.change_percent) if kline.change_percent else 0,
+                'change_percent': float(kline.change_percent) if kline.change_percent else 0,
             })
         
         logger.info(f"📊 股票数量: {len(df)}, 有历史数据的股票: {len(history_data)}")
