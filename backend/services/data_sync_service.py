@@ -354,6 +354,110 @@ class DataSyncService:
         self._consecutive_timeouts = 0  # 成功一次即重置计数
         return data_list
 
+    def ingest_intraday_to_tacn(self, stock_codes, trade_date, db_session):
+        """盘后用 baostock 5分钟K 拉个股当日分时 → POST 给 TA-CN sink 端点写入 intraday_quotes
+        （分时分离度因子 compute_intraday_deviation 的个股数据源）。
+
+        架构：K 线落库(日K + 分钟K)是 daydayUp 的职责——daydayUp 拥有 baostock 采集，本方法拉取+
+        驱动落库，TA-CN /api/sync/intraday-quotes 仅作 mongo 存储 sink，TA-CN 侧不再调度/采集 K 线。
+        个股分钟 baostock 20:00 后才入库，故复盘已整体挪到 20:30；指数分钟仍由 TA-CN 既有 16:00
+        refresh_all_indices 处理（baostock 不支持指数分钟）。北交所(bj.)baostock 不支持，跳过。
+        昨收直接取 daydayUp 自己 MySQL（trade_date 之前最近交易日收盘），省一半 baostock 调用且更可靠。
+        失败不阻断复盘（上层 try 兜住，分离度因子缺省 0）。
+
+        Args:
+            stock_codes: daydayUp 格式代码列表（sh.600000 / sz.000001 …，已由调用方按成交额 TopN 截断）
+            trade_date: 'YYYY-MM-DD'
+            db_session: 复盘当前 DB 会话（取昨收）
+        Returns:
+            int: TA-CN 实际 upsert/modify 的 bar 数（失败返回 0）
+        """
+        import os as _os
+        import requests as _requests
+        from models.kline import StockDailyKLine
+
+        codes = [c for c in (stock_codes or []) if str(c).startswith(('sh.', 'sz.'))]  # 排除北交所 bj.
+        if not codes:
+            logger.info("分时灌库: 无可用个股（北交所 baostock 不支持），跳过")
+            return 0
+
+        # 昨收：trade_date 之前最近一个交易日收盘（一次 IN 查询，按代码取最新一条）
+        prev_close = {}
+        rows = (
+            db_session.query(StockDailyKLine.stock_code, StockDailyKLine.close_price)
+            .filter(
+                StockDailyKLine.stock_code.in_(codes),
+                StockDailyKLine.trade_date < trade_date,
+                StockDailyKLine.close_price.isnot(None),
+            )
+            .order_by(StockDailyKLine.stock_code, StockDailyKLine.trade_date.desc())
+            .all()
+        )
+        for sc, cp in rows:
+            if sc not in prev_close and cp:
+                prev_close[sc] = float(cp)
+
+        bars = []
+        pulled = 0
+        for code in codes:
+            pc = prev_close.get(code)
+            if not pc:
+                continue  # 无昨收（新股/数据缺）→ 无法算 pct_chg，跳过
+            try:
+                kl = self.get_kline_data(code, trade_date, trade_date, frequency='5', adjustflag='2')
+            except BaostockServiceUnavailable:
+                logger.warning("分时灌库: baostock 服务不可用，中止后续拉取")
+                break
+            except Exception as _e:
+                logger.debug(f"分时灌库: {code} 5min 拉取失败: {_e}")
+                continue
+            if not kl:
+                continue
+            pulled += 1
+            code6 = ''.join(ch for ch in code if ch.isdigit())[-6:]
+            for r in kl:
+                t_raw = r.get('time') or ''
+                cl = r.get('close')
+                if not t_raw or len(t_raw) < 12 or cl in (None, ''):
+                    continue
+                try:
+                    close_f = float(cl)
+                except (TypeError, ValueError):
+                    continue
+                bars.append({
+                    'code': code6,
+                    't': t_raw[8:10] + ':' + t_raw[10:12],   # "20260611093500000" -> "09:35"
+                    'close': close_f,
+                    'pct_chg': round((close_f / pc - 1) * 100, 4),
+                })
+        self.logout()  # 释放 baostock 会话
+
+        if not bars:
+            logger.warning("分时灌库: baostock 5分钟K 无数据，跳过 POST")
+            return 0
+
+        tacn = _os.getenv('TACN_API_BASE', 'http://host.docker.internal:8000').rstrip('/')
+        token = _os.getenv('INTERNAL_TRIGGER_TOKEN', '')
+        headers = {"X-Internal-Token": token} if token else {}
+        sent = 0
+        for i in range(0, len(bars), 5000):  # 分批 POST，避免单次 payload 过大
+            chunk = bars[i:i + 5000]
+            try:
+                resp = _requests.post(
+                    f"{tacn}/api/sync/intraday-quotes",
+                    json={"trade_date": str(trade_date), "bars": chunk},
+                    headers=headers,
+                    timeout=120,
+                )
+                if resp.status_code != 200:
+                    logger.warning(f"intraday-quotes 灌库 HTTP {resp.status_code}: {resp.text[:150]}")
+                else:
+                    sent += int((resp.json() or {}).get('upserted', 0))
+            except Exception as _pe:
+                logger.warning(f"intraday-quotes 灌库 POST 失败: {_pe}")
+        logger.info(f"✅ 分时灌库完成: {pulled}/{len(codes)} 只拉到分时 → {len(bars)} 根5min bar，TA-CN upserted={sent}")
+        return sent
+
     def save_kline_data(self, db_session, data_list, frequency, stock_name_map):
         """
         保存K线数据到数据库

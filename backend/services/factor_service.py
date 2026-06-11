@@ -671,6 +671,19 @@ class FactorCalculator:
         #   登记 FactorDefine(intraday_deviation, is_active) 即启用；接口失败/无分时 → 0，不阻断复盘。
         if 'intraday_deviation' in all_factor_map:
             df['intraday_deviation'] = 0.0
+            # 8.6.0 先用 baostock 盘后 5分钟K 把个股分时灌进 TA-CN intraday_quotes（落库由 daydayUp 主导：
+            #   它拥有 baostock 采集，TA-CN 端点仅作存储 sink）。baostock 个股分钟 20:00 后入库 →
+            #   复盘已挪到 20:30 跑（scheduler_service）。个股池按当日成交额 TopN 截断（对齐原 rt_k universe，
+            #   池外缺省 0，与旧行为一致；TA-CN deviation 端点单次上限 300）。失败不阻断复盘。
+            try:
+                import os as _os
+                _topn = int(_os.getenv('INTRADAY_INGEST_TOPN', '300'))
+                _univ = (df.nlargest(_topn, 'turnover')['stock_code'].tolist()
+                         if 'turnover' in df.columns else df['stock_code'].tolist())
+                from services.data_sync_service import DataSyncService
+                DataSyncService().ingest_intraday_to_tacn(_univ, trade_date, db_session)
+            except Exception as _ie:
+                logger.warning(f"⚠️ 分时分离度数据灌库失败（缺省0，不影响复盘）: {_ie}")
             try:
                 _dev = self._fetch_intraday_deviation(df['stock_code'].tolist(), trade_date)
                 if _dev:
