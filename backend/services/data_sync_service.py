@@ -350,8 +350,10 @@ class DataSyncService:
         return data_list
 
     def ingest_intraday_to_tacn(self, stock_codes, trade_date, db_session):
-        """盘后用 baostock 5分钟K 拉个股当日分时 → POST 给 TA-CN sink 端点写入 intraday_quotes
+        """盘后拉个股当日 5分钟分时 → POST 给 TA-CN sink 端点写入 intraday_quotes
         （分时分离度因子 compute_intraday_deviation 的个股数据源）。
+        2026-06-12：主用 akshare/sina(stock_zh_a_minute, HTTP 可并发 ~2s/只),akshare 失败/限流的
+        才落 baostock 兜底(串行,有超时+登录熔断)。比纯 baostock 快数倍且避开其 socket 卡死。
 
         架构：K 线落库(日K + 分钟K)是 daydayUp 的职责——daydayUp 拥有 baostock 采集，本方法拉取+
         驱动落库，TA-CN /api/sync/intraday-quotes 仅作 mongo 存储 sink，TA-CN 侧不再调度/采集 K 线。
@@ -392,43 +394,87 @@ class DataSyncService:
             if sc not in prev_close and cp:
                 prev_close[sc] = float(cp)
 
-        bars = []
-        pulled = 0
-        for code in codes:
+        td_dash = str(trade_date)[:10]
+        try:
+            import akshare as _ak
+        except Exception as _ie:
+            _ak = None
+            logger.warning(f"分时: akshare 不可用,全部走 baostock 兜底: {_ie}")
+
+        def _ak_pull(code):
+            """akshare/sina 拉单只当日 5min → (code, bars) 或 (code, None=>转 baostock 兜底)。"""
             pc = prev_close.get(code)
             if not pc:
-                continue  # 无昨收（新股/数据缺）→ 无法算 pct_chg，跳过
+                return code, []  # 无昨收,跳过(baostock 也算不了 pct_chg)
+            if _ak is None:
+                return code, None
             try:
-                kl = self.get_kline_data(code, trade_date, trade_date, frequency='5', adjustflag='2')
-            except BaostockServiceUnavailable:
-                logger.warning("分时灌库: baostock 服务不可用，中止后续拉取")
-                break
-            except Exception as _e:
-                logger.debug(f"分时灌库: {code} 5min 拉取失败: {_e}")
-                continue
-            if not kl:
-                continue
-            pulled += 1
+                df = _ak.stock_zh_a_minute(symbol=code.replace('.', ''), period='5', adjust='')
+            except Exception:
+                return code, None  # akshare 失败/限流 → 兜底
+            if df is None or df.empty:
+                return code, None
             code6 = ''.join(ch for ch in code if ch.isdigit())[-6:]
-            for r in kl:
-                t_raw = r.get('time') or ''
-                cl = r.get('close')
-                if not t_raw or len(t_raw) < 12 or cl in (None, ''):
+            out = []
+            for _, r in df.iterrows():
+                day = str(r.get('day') or '')
+                if not day.startswith(td_dash):
                     continue
                 try:
-                    close_f = float(cl)
+                    cl = float(r.get('close'))
                 except (TypeError, ValueError):
                     continue
-                bars.append({
-                    'code': code6,
-                    't': t_raw[8:10] + ':' + t_raw[10:12],   # "20260611093500000" -> "09:35"
-                    'close': close_f,
-                    'pct_chg': round((close_f / pc - 1) * 100, 4),
-                })
-        self.logout()  # 释放 baostock 会话
+                out.append({'code': code6, 't': day[11:16], 'close': cl,
+                            'pct_chg': round((cl / pc - 1) * 100, 4)})
+            return (code, out) if out else (code, None)  # 当日无 bar → 兜底
 
+        # 主路径：akshare/sina 并发(HTTP 可并发,5 worker)
+        bars = []
+        ak_ok = 0
+        fallback = []
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        with _TPE(max_workers=5) as _ex:
+            for code, out in _ex.map(_ak_pull, codes):
+                if out is None:
+                    fallback.append(code)
+                elif out:
+                    bars.extend(out); ak_ok += 1
+
+        # 兜底路径：akshare 失败/限流的转 baostock(串行,有超时+登录熔断护栏)
+        bs_ok = 0
+        if fallback:
+            logger.info(f"分时: akshare/sina 成功 {ak_ok} 只，{len(fallback)} 只转 baostock 兜底")
+            for code in fallback:
+                pc = prev_close.get(code)
+                if not pc:
+                    continue
+                try:
+                    kl = self.get_kline_data(code, trade_date, trade_date, frequency='5', adjustflag='2')
+                except BaostockServiceUnavailable:
+                    logger.warning("分时兜底: baostock 服务不可用，中止兜底")
+                    break
+                except Exception:
+                    continue
+                if not kl:
+                    continue
+                bs_ok += 1
+                code6 = ''.join(ch for ch in code if ch.isdigit())[-6:]
+                for r in kl:
+                    t_raw = r.get('time') or ''
+                    cl = r.get('close')
+                    if not t_raw or len(t_raw) < 12 or cl in (None, ''):
+                        continue
+                    try:
+                        cf = float(cl)
+                    except (TypeError, ValueError):
+                        continue
+                    bars.append({'code': code6, 't': t_raw[8:10] + ':' + t_raw[10:12],
+                                 'close': cf, 'pct_chg': round((cf / pc - 1) * 100, 4)})
+            self.logout()  # 释放 baostock 会话
+
+        pulled = ak_ok + bs_ok
         if not bars:
-            logger.warning("分时灌库: baostock 5分钟K 无数据，跳过 POST")
+            logger.warning("分时灌库: akshare/baostock 均无数据，跳过 POST")
             return 0
 
         tacn = _os.getenv('TACN_API_BASE', 'http://host.docker.internal:8000').rstrip('/')
@@ -450,7 +496,8 @@ class DataSyncService:
                     sent += int((resp.json() or {}).get('upserted', 0))
             except Exception as _pe:
                 logger.warning(f"intraday-quotes 灌库 POST 失败: {_pe}")
-        logger.info(f"✅ 分时灌库完成: {pulled}/{len(codes)} 只拉到分时 → {len(bars)} 根5min bar，TA-CN upserted={sent}")
+        logger.info(f"✅ 分时灌库完成: {pulled}/{len(codes)} 只拉到分时(akshare {ak_ok} + baostock兜底 {bs_ok}) "
+                    f"→ {len(bars)} 根5min bar，TA-CN upserted={sent}")
         return sent
 
     def save_kline_data(self, db_session, data_list, frequency, stock_name_map):
