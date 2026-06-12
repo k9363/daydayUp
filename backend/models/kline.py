@@ -134,7 +134,9 @@ class StockDailyKLine(BaseKLine):
 
     __table_args__ = (
         db.UniqueConstraint('stock_code', 'trade_date', name='uq_stock_daily_kline_code_date'),
-        db.Index('idx_daily_stock_date', 'stock_code', 'trade_date'),
+        # idx_daily_stock_date(stock_code,trade_date) 与上面 unique 完全重复,2026-06-12 已 DROP
+        # (回填后表 15.5M 行,多维护这份冗余索引拖慢 upsert→Tushare快速路径写库超时→复盘误甩baostock全市场)。
+        # 模型同步移除,避免重建表复活;按交易日全市场查仍走 idx_daily_trade_date。
         db.Index('idx_daily_trade_date', 'trade_date'),
     )
 
