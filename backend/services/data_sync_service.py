@@ -145,51 +145,14 @@ class DataSyncService:
                 logger.error(traceback.format_exc())
 
     def ensure_login(self):
-        """
-        确保已登录，如果未登录或会话失效则自动重连
-        
+        """确保已登录（惰性，2026-06-12 重构）：未登录/会话标记失效才登录；
+        不再每次发 query_trade_dates 探活——探活防不住 socket 卡死(它跑在同一会话上、会一起卡)、
+        且在紧循环里翻倍往返(每只多一次探测)。会话中途失效改由查询返回 LOGIN_ERROR_CODES 时
+        反应式重连处理（见 get_kline_data）。login() 内部只在 lg 为空/失效时才真正握手,幂等便宜。
+
         Returns:
             bool: 登录成功返回 True
         """
-        import socket
-        import threading
-        
-        # 使用带超时的检测机制，避免会话失效后阻塞
-        result = {'success': False, 'needs_relogin': False}
-        
-        def check_session():
-            try:
-                # 使用较短的超时检测会话
-                original_timeout = socket.getdefaulttimeout()
-                socket.setdefaulttimeout(10)  # 10秒超时
-                try:
-                    rs = bs.query_trade_dates(start_date='2020-01-01', end_date='2020-01-01')
-                    if rs.error_code == '0':
-                        result['success'] = True  # 会话有效
-                    else:
-                        result['needs_relogin'] = True  # 需要重新登录
-                finally:
-                    socket.setdefaulttimeout(original_timeout)
-            except Exception:
-                result['needs_relogin'] = True  # 任何异常都需要重新登录
-        
-        # 在独立线程中运行检测，避免阻塞
-        check_thread = threading.Thread(target=check_session)
-        check_thread.daemon = True
-        check_thread.start()
-        check_thread.join(timeout=15)  # 最多等待15秒
-        
-        if check_thread.is_alive():
-            # 检测超时，强制重新登录
-            logger.warning("会话检测超时，强制重新登录")
-            result['needs_relogin'] = True
-        
-        if result['success']:
-            return True  # 会话有效
-        
-        # 需要重新登录
-        if self.lg:
-            self.lg = None
         return self.login()
 
     def get_stock_list(self, date=None, stock_type='all'):
@@ -360,6 +323,27 @@ class DataSyncService:
         except Exception as e:
             logger.warning(f"Baostock 请求异常: code={code}, {e}")
             return []
+
+        # 反应式重连：查询返回"会话过期/未登录"错误码 → 重连一次重试（替代每次主动探活）。
+        if error_code in self.LOGIN_ERROR_CODES:
+            logger.warning(f"baostock 会话过期(error_code={error_code})，重连重试一次: code={code}")
+            self.lg = None
+            try:
+                self.login()
+                error_code, error_msg, data_list = _call_baostock_with_timeout(
+                    _do_query, timeout=_BAOSTOCK_QUERY_TIMEOUT_SEC
+                )
+            except TimeoutError:
+                self._consecutive_timeouts += 1
+                self.lg = None
+                if self._consecutive_timeouts >= self.MAX_CONSECUTIVE_TIMEOUTS:
+                    raise BaostockServiceUnavailable(
+                        f"baostock 连续 {self._consecutive_timeouts} 次超时，判定服务不可用"
+                    )
+                return []
+            except Exception as _e:
+                logger.warning(f"baostock 重连重试异常: code={code}, {_e}")
+                return []
 
         logger.info(f"Baostock返回: error_code={error_code}, error_msg={error_msg}")
         self._consecutive_timeouts = 0  # 成功一次即重置计数
