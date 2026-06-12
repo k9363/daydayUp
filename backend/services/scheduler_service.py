@@ -23,14 +23,15 @@ class SchedulerService:
             
             self.scheduler = BackgroundScheduler()
             
-            # 添加定时任务：周一到周五 20:30 执行复盘任务
-            # 2026-06-11 由 18:00 改 20:30：分时分离度因子改用 baostock 5分钟K(免费可靠),
-            # 而 baostock 当日分钟K要 20:00 之后才入库 → 复盘须等 20:00 后(TA-CN 20:10 摄取分时,
-            # 复盘 20:30 读到完整盘中分时)。cron: 0=周一...4=周五
+            # 添加定时任务：周一到周五 18:00 执行复盘任务
+            # 2026-06-12 由 20:30 改回 18:00：分时改用 akshare/sina(stock_zh_a_minute)实时feed,
+            # 收盘后即全量(不再像 baostock 要等 20:00 盘后入库)→ 复盘不必等到 20:30。
+            # 现唯一时间门控是 Tushare 当日日线(EOD)落定,通常傍晚就绪;sync_market_daily_via_tushare
+            # 有就绪校验(股票数<阈值则重试),遇 Tushare 偶发晚出可兜底。cron: 0=周一...4=周五
             trigger = CronTrigger(
                 day_of_week='0-4',  # 周一到周五
-                hour=20,
-                minute=30
+                hour=18,
+                minute=0
             )
             
             self.scheduler.add_job(
@@ -81,9 +82,9 @@ class SchedulerService:
                 replace_existing=True,
             )
 
-            # 复盘邮件兜底：21:15（复盘 20:30 后给 TA-CN 全市场分析 ~45min）检查当天 [定时]
+            # 复盘邮件兜底：18:45（复盘 18:00 后给 TA-CN 全市场分析 ~45min）检查当天 [定时]
             # 已完成但邮件未发的复盘 → 降级发（事件驱动 push 主路径没来时保底，email_sent 防重）
-            review_mail_backstop_trigger = CronTrigger(day_of_week='0-4', hour=21, minute=15)
+            review_mail_backstop_trigger = CronTrigger(day_of_week='0-4', hour=18, minute=45)
             self.scheduler.add_job(
                 self.execute_review_email_backstop,
                 review_mail_backstop_trigger,
@@ -95,7 +96,7 @@ class SchedulerService:
             logger.info(
                 "✅ 定时任务调度器初始化完成: "
                 "每 2 小时 :00 淘股吧热帖 / :05 特别关注 / "
-                "周一到周六 17:30 元数据补充(周六概念全量比对) / 周一到周五 20:30 复盘(等baostock分钟K 20:00入库) / 21:15 复盘邮件兜底"
+                "周一到周六 17:30 元数据补充(周六概念全量比对) / 周一到周五 18:00 复盘(分时改akshare实时,不再等baostock) / 18:45 复盘邮件兜底"
             )
         except ImportError:
             logger.warning("⚠️ APScheduler未安装，定时任务功能不可用")
