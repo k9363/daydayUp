@@ -279,9 +279,20 @@ class DataSyncService:
         Returns:
             list: K线数据列表
         """
-        # 确保已登录
-        self.ensure_login()
-        
+        # 确保已登录；登录失败/超时也计入连续超时熔断——否则全局 socket 卡死后会逐只重连超时,
+        # 累计 MAX 次干净中止(抛 BaostockServiceUnavailable),而非逐只磨上百只 ×15s。
+        try:
+            self.ensure_login()
+        except Exception as _le:
+            self._consecutive_timeouts += 1
+            self.lg = None
+            if self._consecutive_timeouts >= self.MAX_CONSECUTIVE_TIMEOUTS:
+                raise BaostockServiceUnavailable(
+                    f"baostock 连续 {self._consecutive_timeouts} 次登录失败/超时，判定服务不可用"
+                )
+            logger.warning(f"baostock 登录失败({self._consecutive_timeouts}/{self.MAX_CONSECUTIVE_TIMEOUTS})，跳过本只 {code}: {_le}")
+            return []
+
         # 映射频率到Baostock参数
         freq_map = {
             'daily': 'd',
