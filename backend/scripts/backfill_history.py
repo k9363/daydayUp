@@ -135,7 +135,11 @@ def main():
                 StockBasic.stock_type == STOCK_TYPE).all()
             name_map = {c: n for c, n in rows}
             all_codes = sorted(name_map.keys())
-            codes = [c for c in all_codes if c.startswith(_STOCK_PREFIX)]
+            # stock 类型用真股票前缀过滤; 指数/ETF 等是 sh.000/sz.399 前缀, 只排除 baostock 不支持的北交所(bj.)
+            if STOCK_TYPE == "stock":
+                codes = [c for c in all_codes if c.startswith(_STOCK_PREFIX)]
+            else:
+                codes = [c for c in all_codes if c.startswith(("sh.", "sz."))]
             log(f"区间 {START} ~ {END} | universe=stock_basic({STOCK_TYPE})：共 {len(all_codes)} 只，"
                 f"baostock 可拉 {len(codes)} 只，跳过北交所等 {len(all_codes) - len(codes)} 只")
 
