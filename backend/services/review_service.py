@@ -986,6 +986,9 @@ class ReviewTaskService:
 
             logger.info(f"✅ 步骤2完成: 筛选出 {len(top100_df)} 只股票 ({filter_desc})")
 
+            # ========== 步骤2.5: 分时数据填充（与因子计算解耦的独立数据准备步骤）==========
+            self._ingest_intraday_data(top100_df, trade_date)
+
             # ========== 步骤3: 计算因子并排名 ==========
             logger.info(f"📊 步骤3: 计算因子得分")
             # 获取前100只股票的历史数据（用于计算因子）
@@ -1134,6 +1137,9 @@ class ReviewTaskService:
                 raise Exception(f"未能筛选出股票: {filter_desc}")
 
             logger.info(f"✅ 步骤2完成: 筛选出 {len(top100_df)} 只股票 ({filter_desc})")
+
+            # ========== 步骤2.5: 分时数据填充（与因子计算解耦的独立数据准备步骤）==========
+            self._ingest_intraday_data(top100_df, trade_date)
 
             # ========== 步骤3: 计算因子并排名 ==========
             logger.info(f"📊 步骤3: 计算因子得分")
@@ -1575,6 +1581,27 @@ class ReviewTaskService:
 
         logger.info(f"成交额前{top_n}股票总成交额: {top_df['turnover'].sum():.2f}")
         return top_df
+
+    def _ingest_intraday_data(self, top100_df, trade_date):
+        """步骤2.5 分时数据填充（与因子计算解耦的独立数据准备步骤）。
+
+        盘后用 baostock 拉打分池（按当日成交额 Top300）个股 5 分钟分时，灌入 TA-CN intraday_quotes，
+        供步骤3 的「分时分离度」因子读取。落库由 daydayUp 主导（拥有 baostock 采集），与因子计算分离——
+        因子只读、不触发拉数。失败不阻断复盘（分离度因子缺省 0）。
+        个股分钟 baostock 20:00 后入库，故复盘定时已挪到 20:30；指数分钟由 TA-CN 16:00 refresh_all_indices 处理。
+        """
+        try:
+            from extensions import db
+            from services.data_sync_service import DataSyncService
+            if top100_df is None or top100_df.empty or 'stock_code' not in top100_df.columns:
+                logger.warning("⚠️ 步骤2.5 跳过: 打分池为空")
+                return
+            univ = (top100_df.nlargest(300, 'turnover')['stock_code'].tolist()
+                    if 'turnover' in top100_df.columns else top100_df['stock_code'].tolist()[:300])
+            cnt = DataSyncService().ingest_intraday_to_tacn(univ, trade_date, db.session)
+            logger.info(f"✅ 步骤2.5完成: 分时数据填充 {len(univ)} 只 → TA-CN upserted={cnt}")
+        except Exception as e:
+            logger.warning(f"⚠️ 步骤2.5 分时数据填充失败（分离度因子缺省0，不影响复盘）: {e}")
 
     def _calculate_factors(self, stock_codes, trade_date, db_session):
         """
