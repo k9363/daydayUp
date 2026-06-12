@@ -31,6 +31,10 @@
             涨停 {{ gauge.market.limit_up }}/跌停 {{ gauge.market.limit_dn }} ·
             top100中位 {{ gauge.market.top100_chg }}%
           </div>
+          <div v-if="gauge.market.top_score != null" class="gauge-thermo">
+            顶底温度计：顶 <b>{{ gauge.market.top_score }}</b>/100<span v-if="gauge.market.tb_top_label" class="thermo-top">（{{ gauge.market.tb_top_label }}）</span>
+            ｜底 <b>{{ gauge.market.bot_score }}</b>/100<span v-if="gauge.market.tb_bot_label" class="thermo-bot">（{{ gauge.market.tb_bot_label }}）</span>
+          </div>
           <div v-if="(gauge.market.top_signals || []).length || (gauge.market.bottom_signals || []).length" class="gauge-signals">
             <div v-for="s in gauge.market.top_signals || []" :key="'t' + s" class="sig-top">⚠ {{ s }}</div>
             <div v-for="s in gauge.market.bottom_signals || []" :key="'b' + s" class="sig-bot">▼ {{ s }}</div>
@@ -260,6 +264,9 @@ const formatAmount = (value) => {
 }
 .gauge-verdict { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
 .gauge-readings { color: #888; margin-bottom: 4px; }
+.gauge-thermo { color: #666; margin-bottom: 4px; }
+.gauge-thermo .thermo-top { color: #e67e22; }
+.gauge-thermo .thermo-bot { color: #27ae60; }
 .sig-top { color: #e67e22; }
 .sig-bot { color: #27ae60; }
 .gauge-sectors { margin-top: 6px; }
