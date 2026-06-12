@@ -831,6 +831,15 @@ class DataSyncService:
 
                 # 重新计算 remaining_codes 把 Tushare 覆盖的剔除
                 remaining_codes = [c for c in remaining_codes if c not in tushare_covered_codes]
+                # 2026-06-12: 指数不走 baostock 兜底——复盘只用 ~11 个主要指数(上证/沪深300/中证500·1000/
+                #   创业板指/科创50/深成指等,已由 Tushare market-daily 覆盖)。其余交易所细分指数
+                #   (sh.000xxx / sz.399xxx / sz.398xxx)复盘不用、baostock 也拉不全且是 socket 卡死高发区,直接跳过。
+                #   (注：sz.000xxx 是深市个股如平安银行,不在此列;只排 sh.000/sz.399/sz.398 指数段。)
+                _n0 = len(remaining_codes)
+                remaining_codes = [c for c in remaining_codes
+                                   if not c.startswith(('sh.000', 'sz.399', 'sz.398'))]
+                if len(remaining_codes) < _n0:
+                    logger.info(f"跳过 {_n0 - len(remaining_codes)} 个细分指数(不走 baostock;复盘用的主要指数已由 Tushare 覆盖)")
                 logger.info(f"baostock 兜底处理剩余: {len(remaining_codes)} 只")
 
             # baostock 不可用时跳过兜底（tushare 已覆盖的正常股不受影响；剩余多为停牌/次新无数据）
