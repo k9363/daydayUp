@@ -640,20 +640,14 @@ class DataSyncService:
         if not items:
             raise Exception(f"market-daily 未拿到就绪数据(股票数<{min_stocks}或调用失败)，中止以防半截数据入库")
 
-        # universe 过滤：只写 daydayUp 元数据(StockBasic)跟踪的代码。market-daily 的 ETF(~2020)
-        #   比元数据跟踪的(~1433)多,多出的未跟踪 ETF 落库后既不展示也不参与复盘(步骤2/前端均按
-        #   StockBasic 过滤),纯属脏数据膨胀 → 过滤掉(与旧 fast-path 的 relevant_items 行为一致)。
-        rel = [it for it in items if it.get('code') in name_map]
-        if len(rel) < len(items):
-            logger.info(f"过滤 {len(items) - len(rel)} 行未在元数据跟踪的代码(多为未跟踪 ETF/基金),不落库")
-
-        # 完整性校验：剔除 OHLC/涨跌幅 半截行(EOD 未落定时可能出现)
+        # 不做 universe 过滤：market-daily 返回的全部代码(含未在 StockBasic 跟踪的 ETF/基金)都正常落库
+        #   (用户确认:未跟踪的虽不展示,但照常入库备用,不过滤)。仅做完整性校验剔 EOD 半截行。
         def _complete(it):
             return all(str(it.get(k, '')).strip() not in ('', 'None', 'nan')
                        for k in ('open', 'high', 'low', 'close', 'pctChg'))
-        complete = [it for it in rel if _complete(it)]
-        if len(complete) < len(rel):
-            logger.warning(f"⚠️ 剔除 {len(rel) - len(complete)} 行半截数据(open/low/pctChg 空)")
+        complete = [it for it in items if _complete(it)]
+        if len(complete) < len(items):
+            logger.warning(f"⚠️ 剔除 {len(items) - len(complete)} 行半截数据(open/low/pctChg 空)")
 
         saved = self.save_kline_data(db_session, complete, 'daily', name_map)
         logger.info(f"✅ Tushare market-daily 同步完成: upsert {saved} 行（唯一索引去重）")
