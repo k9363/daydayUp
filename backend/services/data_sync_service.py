@@ -593,6 +593,65 @@ class DataSyncService:
         }
         return model_map.get(frequency, StockDailyKLine)
 
+    def sync_market_daily_via_tushare(self, db_session, trade_date, min_stocks=4000, max_retry=3):
+        """日复盘日K同步（2026-06-12 重构）：TA-CN /api/sync/market-daily 一次批量拉当日全市场
+        （股票 + ETF + 主要指数，~13 次 Tushare 调用 <10s）→ 就绪+完整性校验 → upsert（唯一索引去重）。
+        全走 Tushare、同步完成：不查缺失、不建异步同步任务、不走 baostock 兜底。返回写入行数。
+
+        护栏：① 就绪校验——返回股票数 < min_stocks 判定 EOD 未落定/Tushare 异常，重试,
+        绝不拿半截数据怼库（替代原 baostock 兜底的角色）；② 完整性校验——剔除 OHLC/涨跌幅 空的半截行。
+        """
+        import os as _os
+        import time as _time
+        import requests as _req
+        from models.stockbasic import StockBasic
+
+        tacn = _os.getenv('TACN_API_BASE', 'http://host.docker.internal:8000').rstrip('/')
+        token = _os.getenv('INTERNAL_TRIGGER_TOKEN', '')
+        headers = {'X-Internal-Token': token} if token else {}
+        td_compact = str(trade_date)[:10].replace('-', '')
+        name_map = dict(db_session.query(StockBasic.stock_code, StockBasic.stock_name).all())
+
+        items = None
+        for attempt in range(1, max_retry + 1):
+            try:
+                resp = _req.get(
+                    f"{tacn}/api/sync/market-daily",
+                    params={'trade_date': td_compact, 'include_funds': 'true', 'include_index': 'true'},
+                    headers=headers, timeout=90,
+                )
+                if resp.status_code != 200:
+                    logger.warning(f"⚠️ market-daily HTTP {resp.status_code}（{attempt}/{max_retry}）")
+                    _time.sleep(5 * attempt); continue
+                body = resp.json()
+                cand = body.get('items') or []
+                counts = body.get('counts') or {}
+                n_stock = int(counts.get('stock', 0))
+                if n_stock >= min_stocks:
+                    logger.info(f"🚀 market-daily 拿到 {len(cand)} 行 "
+                                f"(股票{n_stock}/ETF{counts.get('etf')}/指数{counts.get('index')})")
+                    items = cand; break
+                logger.warning(f"⚠️ market-daily 股票数 {n_stock} < {min_stocks}（EOD 未落定?），"
+                               f"第 {attempt}/{max_retry} 次重试")
+                _time.sleep(10 * attempt)
+            except Exception as _e:
+                logger.warning(f"⚠️ market-daily 调用失败（{attempt}/{max_retry}）: {_e}")
+                _time.sleep(5 * attempt)
+        if not items:
+            raise Exception(f"market-daily 未拿到就绪数据(股票数<{min_stocks}或调用失败)，中止以防半截数据入库")
+
+        # 完整性校验：剔除 OHLC/涨跌幅 半截行(EOD 未落定时可能出现)
+        def _complete(it):
+            return all(str(it.get(k, '')).strip() not in ('', 'None', 'nan')
+                       for k in ('open', 'high', 'low', 'close', 'pctChg'))
+        complete = [it for it in items if _complete(it)]
+        if len(complete) < len(items):
+            logger.warning(f"⚠️ 剔除 {len(items) - len(complete)} 行半截数据(open/low/pctChg 空)")
+
+        saved = self.save_kline_data(db_session, complete, 'daily', name_map)
+        logger.info(f"✅ Tushare market-daily 同步完成: upsert {saved} 行（唯一索引去重）")
+        return saved
+
     def sync_kline_data(self, db_session, task_id, start_date, end_date, frequency='daily',
                         stock_type='all', batch_size=10, request_interval=0.1, stock_codes=None):
         """

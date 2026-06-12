@@ -1232,6 +1232,36 @@ class ReviewTaskService:
         """
         import pandas as pd
         from models.kline import StockDailyKLine
+        from services.data_sync_service import DataSyncService
+
+        # 2026-06-12 重构：日复盘日K改为【同步全 Tushare】——TA-CN market-daily 一次批量拉
+        #   (股票+ETF+主要指数, <10s) → 就绪+完整性校验 → upsert(唯一索引去重) → 读回返回。
+        #   不再 查库算缺失 / 建异步同步任务 / 等 waiting_for_sync 回调 / 走 baostock 兜底——
+        #   那套是为"旧 baostock 串行拉7000只(慢、须异步)"设计的,Tushare 一次拉齐后纯属负担,
+        #   且是今晚 waiting_for_sync 卡死的根源。create_sync_task/review_task_id 保留签名但已忽略(恒同步)。
+        logger.info(f"📊 同步 {trade_date} 全市场日K（Tushare market-daily 一次拉齐）...")
+        try:
+            _saved = DataSyncService().sync_market_daily_via_tushare(db_session, trade_date)
+            logger.info(f"📊 当日日K upsert {_saved} 行")
+        except Exception as _e:
+            logger.error(f"❌ Tushare market-daily 同步失败: {_e}")
+            try:
+                db_session.rollback()
+            except Exception:
+                pass
+        _rows = db_session.query(StockDailyKLine).filter(
+            StockDailyKLine.trade_date == trade_date
+        ).all()
+        if not _rows:
+            logger.warning(f"⚠️ 数据库中未找到 {trade_date} 的日线数据（Tushare 同步可能失败）")
+            return pd.DataFrame()
+        _df = pd.DataFrame([r.to_dict() for r in _rows])
+        logger.info(f"✅ 步骤1完成（同步 Tushare）: 当日 {len(_df)} 行")
+        return _df
+
+        # ===== 以下为 2026-06-12 前的旧逻辑（查缺失 / 异步同步任务 / baostock 兜底），已被上方同步路径取代、不再执行（保留备查，后续可清理） =====
+        import pandas as pd
+        from models.kline import StockDailyKLine
         from models.stockbasic import StockBasic
 
         logger.info(f"📊 正在获取 {trade_date} 的日K线数据...")
