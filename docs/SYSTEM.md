@@ -155,3 +155,36 @@ daydayUp 把"重活"外包给 TA-CN，自己专注因子计算与复盘编排：
 6. **回填(写)与回测(读)别同时跑同表**；薄样本回测别声称精度（信度纪律）。
 
 > 进 daydayUp 容器跑分析：`docker exec -i -w /app daydayup-backend python -`，脚本内 `from app import create_app; create_app("development")` 起 context。
+
+---
+
+## 十三、因子有效性回测框架与结论（2026-06-13）
+
+把"选股因子到底有没有预测力 / 能不能挖出可交易的正向因子"系统性回测了一轮。脚本都在 `backend/scripts/`，可复用。
+
+### 13.1 四个回测脚本（用途 + 跑法）
+
+| 脚本 | 干什么 | 跑法（容器内） |
+|---|---|---|
+| `stock_factor_efficacy_backtest.py` | 选股 total_score 及分项的**横截面有效性**：Rank IC / Top10超额 / 五分位 / 年代分段 + 新高分组 + 取反 + T+1。支持**分片并行**(`worker` 各跑 `sampled[i::N]`→pkl，`agg` 合并) | `python ... 10 100 <i> <N>` 起 N 片，再 `python ... agg <N>` 聚合 |
+| `factor_mining_ic_scan.py` | **候选因子批量 IC 扫描**（rev5/10/20、vol20、流动性、放量、乖离…），全样本 vs 近一年。纯K线向量化，快 | `python ... <interval> <pool>`；`SFE_START` env 不适用，用 RECENT 参数标近一年 |
+| `factor_long_strategy_backtest.py` | **因子多头**(前TOPQ等权、REBAL换仓) + 多空(纸面) + **大盘顶底择时**(`M5_MODE=trend/avoidtop`)，全样本+近一年 | `python ... <rebal> <topq> <pool> <cost>`，env `M5_MODE`/`M5_TREND` |
+| `stock_pool_m5_strategy_backtest.py` | **事件驱动策略**：高分池滚动watchlist + 回调M5买/跌破M5卖 + 限仓/止损/T+1。两阶段(`pool`分片算每日Top10→pkl，`sim`秒级重跑) | `python ... pool <start> <end> <i> <N>` 再 `python ... sim <start> <end> <N> [band] [cost]` |
+
+通用跑法：`docker exec -d -w /app -e PYTHONPATH=/app daydayup-backend sh -c "python /tmp/x.py ... > /tmp/x.log 2>&1"`（`-d` 分离，PYTHONPATH 必须=/app，stdin 不能管道脚本否则跟 baostock 抢 fd）。
+
+### 13.2 回测踩过的坑（写脚本前必看，省时间）
+- **慢查询**：`trade_date IN (一串日期)` 让优化器选错索引(3s/次)；改 `trade_date BETWEEN a AND b`(走 (stock_code,trade_date) 唯一索引,0.1s)。
+- **越跑越慢**：循环里 `bts` 长事务不刷新 → InnoDB 读视图老化、undo 累积 → 每轮加 `bts.rollback()`。
+- **60s 读超时**：app 默认连接 read_timeout 60s，全表聚合(无 WHERE 的 COUNT/MIN/MAX)会超时；回测自建 `create_engine(..., connect_args={'read_timeout':1800})`。
+- **历史无分时**：`calculate_stock_factors` 每日调 TA-CN `/sync/intraday-deviation`,历史日 90s 超时；回测里 monkeypatch `factor_calculator._fetch_intraday_deviation = lambda *a,**k: {}`(它本不在 total_score 表达式里)。
+- **容器无 scipy**：pandas `corr(method='spearman')` 会炸；用"排名后 Pearson"代替。
+- **容器无 pgrep**：判断进程用 `/proc/*/cmdline`；杀残留用 `kill -9`(多个并发进程会抢 DB 拖慢，跑前先清)。
+- 池口径 = 当日 `stock_basic.stock_type='stock'` 的成交额前 100（与生产 `_filter_top_stocks` 一致）。
+
+### 13.3 结论（详见 memory `project_daydayup_stock_factors_anti_predictive`）
+1. **选股 total_score 是反向信号**（短期反转）：池内 Rank IC −0.04~−0.075（t 到 −8.7）、Top10 跑输池、扛 T+1、两个年代都负。**是规避/见顶预警，不是买入信号**；新高/剩余偏离两个分项中性（噪声）。
+2. **挖到 3 个正向因子**：`rev5`(5日反转)、`ln_turn_avg20`(流动性)、低 `vol20`(低波)——全样本+近一年 IC 都显著为正，**正好是 total_score 奖励特质(强势/放量/追高/新高)的镜像**。
+3. **但做不成可交易多头**：edge 全在多空(A股个股不可做空+涨跌停不可成交+集中小盘→纸面)；**多头 long-only 20 年是灾难**(−80%以上回撤、跑输买入持有沪深300)；近一年好看=regime 运气。
+4. **大盘顶底/趋势择时叠加反转多头 → 更差**(趋势版 −92%、只躲顶版 −87%)：长周期 long-only 反转亏损是结构性的，择时改不了"篮子本身是坏的"。
+5. **终论**：无稳健可交易的多头 alpha。**两套系统各司其职**——TA-CN 顶底管大盘择时、daydayUp 因子管规避/见顶预警，**别强行合成个股做多策略**。
