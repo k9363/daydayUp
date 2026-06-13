@@ -42,7 +42,7 @@
           <div v-if="(gauge.sectors || []).length" class="gauge-sectors">
             <el-tooltip
               v-for="s in gauge.sectors" :key="s.sector" placement="top"
-              :content="`回撤${s.drawdown_pct}%(${s.days_since_top}日) · 切换差${s.spread5}(连正${s.spread_pos_streak}天) · 新高占比${s.nh_now}%/峰${s.nh_peak60}% · 阴阳量比${s.yy_ratio ?? '—'} · corr${s.corr_now ?? '—'}`"
+              :content="`顶底温度计 顶${s.sec_top_score ?? '—'}/底${s.sec_bot_score ?? '—'}${s.sec_tb_bot ? '(' + s.sec_tb_bot + ')' : (s.sec_tb_top ? '(' + s.sec_tb_top + ')' : '')} · 回撤${s.drawdown_pct}%(${s.days_since_top}日) · 派发风险${s.dist_risk ?? '—'}/3 · 新高占比${s.nh_now}%/峰${s.nh_peak60}% · 量能比${s.amt_ratio ?? '—'} · 阴阳量比${s.yy_ratio ?? '—'} · corr${s.corr_now ?? '—'}`"
             >
               <el-tag size="small" effect="plain" class="gauge-sector-tag">{{ s.sector }}：{{ s.state }}</el-tag>
             </el-tooltip>
