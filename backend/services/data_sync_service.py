@@ -355,10 +355,10 @@ class DataSyncService:
         2026-06-12：主用 akshare/sina(stock_zh_a_minute, HTTP 可并发 ~2s/只),akshare 失败/限流的
         才落 baostock 兜底(串行,有超时+登录熔断)。比纯 baostock 快数倍且避开其 socket 卡死。
 
-        架构：K 线落库(日K + 分钟K)是 daydayUp 的职责——daydayUp 拥有 baostock 采集，本方法拉取+
+        架构：K 线落库(日K + 分钟K)是 daydayUp 的职责——daydayUp 拥有采集，本方法拉取+
         驱动落库，TA-CN /api/sync/intraday-quotes 仅作 mongo 存储 sink，TA-CN 侧不再调度/采集 K 线。
-        个股分钟 baostock 20:00 后才入库，故复盘已整体挪到 20:30；指数分钟仍由 TA-CN 既有 16:00
-        refresh_all_indices 处理（baostock 不支持指数分钟）。北交所(bj.)baostock 不支持，跳过。
+        个股分时主用 sina 收盘即全量，故复盘为 18:00（不再等 baostock 20:00）；指数分钟仍由 TA-CN
+        既有 16:00 refresh_all_indices 处理（亦 sina；baostock 不支持指数分钟）。北交所(bj.)跳过(分时源不兼容)。
         昨收直接取 daydayUp 自己 MySQL（trade_date 之前最近交易日收盘），省一半 baostock 调用且更可靠。
         失败不阻断复盘（上层 try 兜住，分离度因子缺省 0）。
 

@@ -27,6 +27,16 @@
 
 日K 落库：就绪校验（返回股票数 ≥ 4000 才算齐，否则重试，防半截数据）+ 完整性校验（剔 OHLC/涨跌幅空行）+ 分块 upsert（唯一索引去重），见 `save_kline_data()`。
 
+### 二之一、分时分离度数据链（端到端，2026-06-14 核对当前代码）
+「分时分离度」因子最容易记错源（历史上 rt_k → baostock → sina 换过；旧 commit / 旧注释会带偏），此处按**当前代码**钉死真实链路：
+
+- **计算定义**（TA-CN `tradingagents/dataflows/intraday_deviation.py`）：个股当日 5min 分时 vs **上证 0.7 + 所属宽基 0.3** 的分离度（env `INTRADAY_DEV_W_SH=0.7` / `INTRADAY_DEV_W_OWN=0.3`）。所属宽基：300/301→创业板指、688/689→科创50、0/2/3 深→深证成指、6 沪主板→沪深300（与上证成大小盘对比）、北交所→北证50。
+- **个股腿数据** = mongo `intraday_quotes`：由 daydayUp 复盘「步骤2.5」`ingest_intraday_to_tacn` 盘后灌入——**主用 akshare/sina `stock_zh_a_minute`（收盘即全量、5 并发）、baostock 仅兜底**（2026-06-12 起 commit `4db54cb0`；此前 06-11 `e58b1cc3` 一度纯 baostock 盘后 20:00 灌库，**已废**）。昨收取 daydayUp 自己 MySQL。<36 点时 TA-CN 侧回退东财直连。
+- **指数腿数据** = mongo `intraday_index_bars`：由 TA-CN 16:00 `app/services/index_intraday_history.refresh_all_indices` 写入——**亦 sina `ak.stock_zh_a_minute`**（免费免积分无限频，source tag `akshare_stock_zh_a_minute_5m`）。缺则东财直连兜底。
+- **东财 push2his kline 兜底**（两腿最深兜底）= `eastmoney_client.em_kline_pct`。⚠️ 该 kline 端点当前被东财 `RemoteDisconnected`（与浏览器 UA 无关、原始头同样挂），基本指望不上；好在主源 sina 稳定。（板块/资金流的 clist 端点不受影响，正常。）
+- **为什么复盘 18:00**：sina 收盘即全量，不必等 baostock 20:00。曾因短暂改 baostock 把复盘挪到 20:30（06-11），改回 sina 后随即调回 18:00（06-12 commit `a5c798ba`）。**反推口诀：复盘 18:00 ⇒ 分时主源必是收盘即全量的 sina，不可能是 baostock。**
+- **职责划分**：daydayUp 拥有采集（拉+灌），TA-CN `/api/sync/intraday-quotes` 仅 mongo sink、`/api/sync/intraday-deviation` 只算分离度；daydayUp 因子侧（`factor_service._fetch_intraday_deviation`）只读结果、不触发拉数。
+
 ---
 
 ## 三、复盘主流程

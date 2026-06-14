@@ -1615,10 +1615,11 @@ class ReviewTaskService:
     def _ingest_intraday_data(self, top100_df, trade_date):
         """步骤2.5 分时数据填充（与因子计算解耦的独立数据准备步骤）。
 
-        盘后用 baostock 拉打分池（按当日成交额 Top300）个股 5 分钟分时，灌入 TA-CN intraday_quotes，
-        供步骤3 的「分时分离度」因子读取。落库由 daydayUp 主导（拥有 baostock 采集），与因子计算分离——
+        盘后拉打分池（按当日成交额 Top300）个股 5 分钟分时，灌入 TA-CN intraday_quotes，
+        供步骤3 的「分时分离度」因子读取。落库由 daydayUp 主导（拥有采集），与因子计算分离——
         因子只读、不触发拉数。失败不阻断复盘（分离度因子缺省 0）。
-        个股分钟 baostock 20:00 后入库，故复盘定时已挪到 20:30；指数分钟由 TA-CN 16:00 refresh_all_indices 处理。
+        个股分时【主用 akshare/sina(stock_zh_a_minute) 收盘即全量、baostock 仅兜底，2026-06-12 起】，
+        故复盘定时为 18:00（不再等 baostock 20:00）；指数分钟由 TA-CN 16:00 refresh_all_indices（亦 sina）处理。
         """
         try:
             from extensions import db
