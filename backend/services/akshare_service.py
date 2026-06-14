@@ -866,55 +866,11 @@ class EastMoneyService:
             logger.error(f"AKShare 连接失败: {e}")
             return False
     
-    # push2delay(延迟行情域名)反爬比 push2 宽松，push2 被封时仍可用；板块/成分股是静态元数据，延迟域名无影响
-    _EM_HOSTS = ('push2delay.eastmoney.com', 'push2.eastmoney.com', '82.push2.eastmoney.com')
-    _EM_HEADERS = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://quote.eastmoney.com/',
-        'Accept': 'application/json, text/plain, */*',
-    }
-
     def _em_clist(self, fs, fields='f12,f14', page_size=100, max_retry=4):
-        """直连东财 clist 接口，自动分页取全部 + 失败退避重试（东财对密集请求会临时
-        RemoteDisconnected 限流）。akshare 1.18.x 请求被反爬，端点本身正常，浏览器
-        UA + Referer 直连即可。返回 list[dict]（f12 代码 / f14 名称）。"""
-        import requests
-        import time
-        for host in self._EM_HOSTS:
-            try:
-                out = []
-                pn = 1
-                while True:
-                    r = None
-                    for attempt in range(max_retry):
-                        try:
-                            r = requests.get(
-                                'http://%s/api/qt/clist/get' % host,
-                                params={'pn': pn, 'pz': page_size, 'po': 1, 'np': 1,
-                                        'fs': fs, 'fields': fields, 'fid': 'f3'},
-                                headers=self._EM_HEADERS, timeout=12,
-                            )
-                            r.raise_for_status()
-                            break
-                        except Exception:
-                            if attempt == max_retry - 1:
-                                raise
-                            time.sleep(1.5 * (attempt + 1))
-                    data = (r.json() or {}).get('data') or {}
-                    diff = data.get('diff') or []
-                    if isinstance(diff, dict):
-                        diff = list(diff.values())
-                    out.extend(diff)
-                    total = data.get('total') or 0
-                    if not diff or len(out) >= total:
-                        break
-                    pn += 1
-                    time.sleep(0.5)
-                return out
-            except Exception as e:
-                logger.warning('东财 clist 请求失败 host=%s fs=%s: %s' % (host, fs, e))
-                continue
-        return []
+        """东财 clist 直连——统一走 services.eastmoney_client（见该模块说明；
+        勿改回 akshare 的 board/fund_flow 接口，会被东财 UA 反爬）。返回 list[dict]。"""
+        from services.eastmoney_client import em_clist
+        return em_clist(fs, fields, page_size=page_size, max_retry=max_retry)
 
     def get_industry_classify(self):
         """获取行业分类列表（东财 push2 直连，m:90+t:2）。返回 [{'industry','code'(BKxxxx)}]。"""
