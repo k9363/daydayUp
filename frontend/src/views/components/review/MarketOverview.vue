@@ -40,6 +40,11 @@
             <b class="ladder-expo">{{ ladderLabel(gauge.market.position_ladder.exposure) }}（{{ Math.round(gauge.market.position_ladder.exposure * 100) }}%）</b>
             <span class="ladder-ma">上证{{ gauge.market.position_ladder.close }} vs MA60 {{ gauge.market.position_ladder.ma60 }}/MA120 {{ gauge.market.position_ladder.ma120 }}<span v-if="gauge.market.position_ladder.topdiv">·顶背离</span></span>
           </div>
+          <div v-if="gauge.market.liquidity" class="gauge-liquidity">
+            💧 流动性温度（主线开关）：<b :class="gauge.market.liquidity.high_liq_bull ? 'liq-on' : 'liq-off'">{{ gauge.market.liquidity.state }}</b>
+            <span class="liq-detail">换手率{{ gauge.market.liquidity.turn }}%/分位{{ gauge.market.liquidity.turn_pct }}·放量{{ gauge.market.liquidity.expand }}</span>
+            <span class="liq-note">{{ gauge.market.liquidity.high_liq_bull ? '→ 可配高景气主线' : '→ 主线无效，以仓位档为准' }}</span>
+          </div>
           <div v-if="(gauge.market.top_signals || []).length || (gauge.market.bottom_signals || []).length" class="gauge-signals">
             <div v-for="s in gauge.market.top_signals || []" :key="'t' + s" class="sig-top">⚠ {{ s }}</div>
             <div v-for="s in gauge.market.bottom_signals || []" :key="'b' + s" class="sig-bot">▼ {{ s }}</div>
@@ -281,6 +286,11 @@ const formatAmount = (value) => {
 .gauge-ladder { color: #555; margin-bottom: 4px; }
 .gauge-ladder .ladder-expo { color: #c0392b; }
 .gauge-ladder .ladder-ma { color: #999; margin-left: 6px; font-size: 11px; }
+.gauge-liquidity { color: #555; margin-bottom: 4px; }
+.gauge-liquidity .liq-on { color: #c0392b; }
+.gauge-liquidity .liq-off { color: #888; }
+.gauge-liquidity .liq-detail { color: #999; margin-left: 6px; font-size: 11px; }
+.gauge-liquidity .liq-note { color: #777; margin-left: 6px; }
 .sig-top { color: #e67e22; }
 .sig-bot { color: #27ae60; }
 .gauge-sectors { margin-top: 6px; }
