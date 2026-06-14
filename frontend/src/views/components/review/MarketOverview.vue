@@ -49,6 +49,13 @@
             <div v-for="s in gauge.market.top_signals || []" :key="'t' + s" class="sig-top">⚠ {{ s }}</div>
             <div v-for="s in gauge.market.bottom_signals || []" :key="'b' + s" class="sig-bot">▼ {{ s }}</div>
           </div>
+          <div v-if="mainline && (mainline.sectors || []).length" class="gauge-mainline">
+            🔥 当前主线（高流动性牛市·近1年超额，沪深300 {{ mainline.idx_ret_1y }}%）：
+            <div v-for="s in mainline.sectors.slice(0, 6)" :key="s.name" class="ml-row">
+              <b>{{ s.name }}</b> <span class="ml-ret">+{{ s.ret_1y }}%（超额+{{ s.excess }}%）</span>
+              <span class="ml-lead">龙头：{{ (s.leaders || []).slice(0, 3).map(l => l.name + (l.ret >= 0 ? '+' : '') + l.ret + '%').join('  ') }}</span>
+            </div>
+          </div>
           <div v-if="(gauge.sectors || []).length" class="gauge-sectors">
             <el-tooltip
               v-for="s in gauge.sectors" :key="s.sector" placement="top"
@@ -139,6 +146,9 @@ const ladderLabel = (e) => {
   const m = { 1: '满仓', 0.5: '减仓(~半仓)', 0.3: '轻仓', 0: '空仓' }
   return m[e] != null ? m[e] : `${e}`
 }
+
+// 主线榜（仅高流动性牛市时复盘才写入；否则无,前端自然不显示）
+const mainline = computed(() => props.marketDetail?.mainline || null)
 
 /** 与 useReviewData.marketCompositeScore 一致：factors 里用 market_score */
 const compositeScore = computed(() => {
@@ -291,6 +301,10 @@ const formatAmount = (value) => {
 .gauge-liquidity .liq-off { color: #888; }
 .gauge-liquidity .liq-detail { color: #999; margin-left: 6px; font-size: 11px; }
 .gauge-liquidity .liq-note { color: #777; margin-left: 6px; }
+.gauge-mainline { margin-top: 6px; color: #555; }
+.gauge-mainline .ml-row { margin: 2px 0; font-size: 11px; }
+.gauge-mainline .ml-ret { color: #c0392b; }
+.gauge-mainline .ml-lead { color: #999; margin-left: 6px; }
 .sig-top { color: #e67e22; }
 .sig-bot { color: #27ae60; }
 .gauge-sectors { margin-top: 6px; }

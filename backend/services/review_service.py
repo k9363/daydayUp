@@ -2747,6 +2747,19 @@ class ReviewTaskService:
                 if _body.get('success'):
                     market_tree['topbottom_gauge'] = _body.get('data')
                     logger.info("🧭 顶底仪表盘已并入大盘结果")
+                    # 主线榜:仅「高流动性牛市」时扫(回测:主线择时仅此 regime 有效 +1.5pp/60日;否则主线无效)
+                    try:
+                        _liq = ((_body.get('data') or {}).get('market') or {}).get('liquidity') or {}
+                        if _liq.get('high_liq_bull'):
+                            from services.mainline_service import scan_mainlines
+                            _ml = scan_mainlines(db.session)
+                            if _ml:
+                                market_tree['mainline'] = _ml
+                                logger.info(f"🔥 高流动性牛市,主线榜已并入(Top{len(_ml.get('sectors', []))})")
+                        else:
+                            logger.info("流动性温度未达高流动性牛市,主线榜跳过(主线无效)")
+                    except Exception as _me:
+                        logger.warning(f"主线榜扫描跳过: {_me}")
                 else:
                     logger.warning(f"⚠️ 顶底仪表盘返回异常: HTTP {_resp.status_code}")
             except Exception as _e:
