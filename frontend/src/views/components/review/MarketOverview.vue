@@ -35,6 +35,11 @@
             顶底温度计：顶 <b>{{ gauge.market.top_score }}</b>/100<span v-if="gauge.market.tb_top_label" class="thermo-top">（{{ gauge.market.tb_top_label }}）</span>
             ｜底 <b>{{ gauge.market.bot_score }}</b>/100<span v-if="gauge.market.tb_bot_label" class="thermo-bot">（{{ gauge.market.tb_bot_label }}）</span>
           </div>
+          <div v-if="gauge.market.position_ladder" class="gauge-ladder">
+            🎚️ 建议仓位档（趋势控仓）：<b>{{ gauge.market.position_ladder.state }}</b> →
+            <b class="ladder-expo">{{ ladderLabel(gauge.market.position_ladder.exposure) }}（{{ Math.round(gauge.market.position_ladder.exposure * 100) }}%）</b>
+            <span class="ladder-ma">上证{{ gauge.market.position_ladder.close }} vs MA60 {{ gauge.market.position_ladder.ma60 }}/MA120 {{ gauge.market.position_ladder.ma120 }}<span v-if="gauge.market.position_ladder.topdiv">·顶背离</span></span>
+          </div>
           <div v-if="(gauge.market.top_signals || []).length || (gauge.market.bottom_signals || []).length" class="gauge-signals">
             <div v-for="s in gauge.market.top_signals || []" :key="'t' + s" class="sig-top">⚠ {{ s }}</div>
             <div v-for="s in gauge.market.bottom_signals || []" :key="'b' + s" class="sig-bot">▼ {{ s }}</div>
@@ -123,6 +128,12 @@ const localIndexData = computed(() => props.indexData)
 
 // 顶底仪表盘（market_tree.topbottom_gauge，由复盘时从 TA-CN 拉取并入库）
 const gauge = computed(() => props.marketDetail?.topbottom_gauge || null)
+
+// 仓位阶梯档位中文（趋势控仓建议，与温度计分工：阶梯管仓位纪律、温度计管情绪预警）
+const ladderLabel = (e) => {
+  const m = { 1: '满仓', 0.5: '减仓(~半仓)', 0.3: '轻仓', 0: '空仓' }
+  return m[e] != null ? m[e] : `${e}`
+}
 
 /** 与 useReviewData.marketCompositeScore 一致：factors 里用 market_score */
 const compositeScore = computed(() => {
@@ -267,6 +278,9 @@ const formatAmount = (value) => {
 .gauge-thermo { color: #666; margin-bottom: 4px; }
 .gauge-thermo .thermo-top { color: #e67e22; }
 .gauge-thermo .thermo-bot { color: #27ae60; }
+.gauge-ladder { color: #555; margin-bottom: 4px; }
+.gauge-ladder .ladder-expo { color: #c0392b; }
+.gauge-ladder .ladder-ma { color: #999; margin-left: 6px; font-size: 11px; }
 .sig-top { color: #e67e22; }
 .sig-bot { color: #27ae60; }
 .gauge-sectors { margin-top: 6px; }
