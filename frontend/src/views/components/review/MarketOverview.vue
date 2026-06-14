@@ -53,6 +53,7 @@
             🔥 当前主线（高流动性牛市·近1年超额，沪深300 {{ mainline.idx_ret_1y }}%）：
             <div v-for="s in mainline.sectors.slice(0, 6)" :key="s.name" class="ml-row">
               <b>{{ s.name }}</b> <span class="ml-ret">+{{ s.ret_1y }}%（超额+{{ s.excess }}%）</span>
+              <span v-if="s.state" class="ml-rhythm">节奏：{{ s.state }}<template v-if="s.sec_top_score != null"> · 温度顶{{ s.sec_top_score }}/底{{ s.sec_bot_score }} · 派发{{ s.dist_risk }}/3</template></span>
               <span class="ml-lead">龙头：{{ (s.leaders || []).slice(0, 3).map(l => l.name + (l.ret >= 0 ? '+' : '') + l.ret + '%').join('  ') }}</span>
             </div>
           </div>
@@ -305,6 +306,7 @@ const formatAmount = (value) => {
 .gauge-mainline .ml-row { margin: 2px 0; font-size: 11px; }
 .gauge-mainline .ml-ret { color: #c0392b; }
 .gauge-mainline .ml-lead { color: #999; margin-left: 6px; }
+.gauge-mainline .ml-rhythm { color: #8e44ad; margin-left: 6px; }
 .sig-top { color: #e67e22; }
 .sig-bot { color: #27ae60; }
 .gauge-sectors { margin-top: 6px; }
