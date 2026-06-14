@@ -672,8 +672,8 @@ class FactorCalculator:
         if 'intraday_deviation' in all_factor_map:
             df['intraday_deviation'] = 0.0
             # 因子只读：分时数据(intraday_quotes)由复盘流程上游「步骤2.5 分时数据填充」(review_service
-            #   ingest_intraday_to_tacn)预先用 baostock 盘后灌好,此处仅调 TA-CN 读分离度,不再耦合拉数。
-            #   接口失败/无分时 → 缺省 0,不阻断复盘。
+            #   ingest_intraday_to_tacn)预先灌好(2026-06-12 起主用 akshare/sina stock_zh_a_minute 收盘即全量、
+            #   baostock 降为兜底),此处仅调 TA-CN 读分离度,不再耦合拉数。接口失败/无分时 → 缺省 0,不阻断复盘。
             try:
                 _dev = self._fetch_intraday_deviation(df['stock_code'].tolist(), trade_date)
                 if _dev:
